@@ -74,7 +74,6 @@ class ProductFinderService
         if ($mentionedProduct) {
             Log::info("PRODUCT_FINDER: Product mentioned by name in message", [
                 'store_id' => $storeId,
-                'query' => $query,
                 'matched_product_id' => $mentionedProduct->id,
                 'matched_product_name' => $mentionedProduct->name,
             ]);
@@ -96,8 +95,7 @@ class ProductFinderService
 
         Log::info("PRODUCT_FINDER: Search Parameters", [
             'store_id' => $storeId,
-            'query' => $query,
-            'query_length' => strlen($queryLower),
+            'query_length' => strlen($queryLower), // length only: the query is the customer's message
             'is_generic' => $isGenericQuery,
         ]);
 
@@ -105,7 +103,6 @@ class ProductFinderService
         if ($isGenericQuery) {
             Log::info("PRODUCT_FINDER: Generic query detected, fetching full catalog", [
                 'store_id' => $storeId,
-                'query' => $query,
             ]);
 
             $products = Product::where('store_id', $storeId)
@@ -128,8 +125,6 @@ class ProductFinderService
             
             Log::info("PRODUCT_FINDER: Executing specific search", [
                 'store_id' => $storeId,
-                'search_pattern' => $searchTerm,
-                'sql_preview' => "SELECT * FROM products WHERE store_id = {$storeId} AND (name LIKE '{$searchTerm}' OR description LIKE '{$searchTerm}')",
             ]);
 
             $products = Product::where('store_id', $storeId)
@@ -143,7 +138,6 @@ class ProductFinderService
 
             Log::info("PRODUCT_FINDER: Search result count", [
                 'store_id' => $storeId,
-                'query' => $query,
                 'results_found' => $products->count(),
             ]);
 
@@ -151,7 +145,6 @@ class ProductFinderService
             if ($products->isEmpty()) {
                 Log::warning("PRODUCT_FINDER: Specific search returned no results, falling back to full catalog", [
                     'store_id' => $storeId,
-                    'original_query' => $query,
                 ]);
 
                 $products = Product::where('store_id', $storeId)

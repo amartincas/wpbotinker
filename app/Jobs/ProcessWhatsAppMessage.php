@@ -27,9 +27,20 @@ class ProcessWhatsAppMessage implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * The number of times the job may be attempted.
+     * Real failures (exceptions) allowed before the job is given up.
+     *
+     * Deliberately NOT $tries: every WithoutOverlapping release (see
+     * middleware()) counts as an attempt, so with $tries = 3 a message that
+     * waited three times for the previous message of the same customer was
+     * failed without ever running — silently unanswered. Waiting is bounded
+     * by retryUntil() instead; only real exceptions count here.
      */
-    public int $tries = 3;
+    public int $maxExceptions = 3;
+
+    public function retryUntil(): \DateTimeInterface
+    {
+        return now()->addMinutes(10);
+    }
 
     /**
      * Create a new job instance.
@@ -104,7 +115,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 Log::warning('BOT_DISABLED: Skipping AI response', [
                     'store_id' => $this->store->id,
                     'customer_phone' => $this->from,
-                    'message' => $this->messageBody,
+                    'message_length' => mb_strlen($this->messageBody ?? ''),
                 ]);
 
                 // Still save the user message for reference
@@ -123,7 +134,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 'store_id' => $this->store->id,
                 'store_name' => $this->store->name,
                 'customer_phone' => $this->from,
-                'message' => $this->messageBody,
+                'message_length' => mb_strlen($this->messageBody ?? ''),
                 'message_type' => $this->messageType,
                 'media_id' => $this->mediaId,
             ]);
@@ -168,7 +179,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                         'store_id' => $this->store->id,
                         'customer_phone' => $this->from,
                         'media_id' => $this->mediaId,
-                        'transcription_preview' => substr($this->messageBody, 0, 200),
+                        'transcription_length' => mb_strlen($this->messageBody),
                     ]);
                 } catch (\Exception $e) {
                     Log::error('Audio transcription failed', [
@@ -224,12 +235,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 'store_id' => $this->store->id,
                 'customer_phone' => $this->from,
                 'total_messages_in_history' => count($history),
-                'messages' => array_map(function ($msg) {
-                    return [
-                        'role' => $msg['role'],
-                        'preview' => substr($msg['content'], 0, 50) . (strlen($msg['content']) > 50 ? '...' : ''),
-                    ];
-                }, $history),
+                'roles' => array_column($history, 'role'),
             ]);
 
             // ===== SYSTEM PROMPT PIPELINE =====
@@ -256,7 +262,6 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 Log::warning('CONTEXT_VALIDATION: No product context retrieved', [
                     'store_id' => $this->store->id,
                     'customer_phone' => $this->from,
-                    'message' => substr($this->messageBody, 0, 100),
                 ]);
             }
             
@@ -292,14 +297,14 @@ class ProcessWhatsAppMessage implements ShouldQueue
             // Get the configured AI service for this store
             $aiEngine = AIServiceFactory::make($this->store);
 
-            // Debug: Log the final prompt being sent to OpenAI
+            // Prompt metadata only — the prompt itself carries order data of
+            // this customer (see 3b above) and must not reach the logs.
             Log::info("PROMPT_PIPELINE: System prompt constructed", [
                 'store_id' => $this->store->id,
                 'store_name' => $this->store->name,
                 'has_system_prompt' => !empty($this->store->system_prompt),
                 'has_product_context' => $productContext !== null && !empty($productContext['context']),
                 'prompt_length' => strlen($systemPrompt),
-                'full_prompt' => $systemPrompt,
             ]);
 
             // Get AI response with chat history
@@ -321,7 +326,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 Log::info('Lead data extracted', [
                     'store_id' => $this->store->id,
                     'customer_phone' => $this->from,
-                    'extracted_data' => $leadData,
+                    'extracted_fields' => array_keys(array_filter($leadData)),
                     'has_lead_token' => $hasLeadToken,
                 ]);
 
@@ -439,8 +444,8 @@ class ProcessWhatsAppMessage implements ShouldQueue
 
                     Log::info('Lead created from WhatsApp conversation', [
                         'store_id' => $this->store->id,
+                        'lead_id' => $lead->id,
                         'customer_phone' => $this->from,
-                        'customer_name' => $leadData['customer_name'] ?? null,
                         'product_service_name' => $leadData['product_service_name'] ?? null,
                         'sale_value' => $lead->sale_value,
                         'needs_address_review' => $needsAddressReview,
@@ -495,7 +500,6 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 'store_id' => $this->store->id,
                 'store_name' => $this->store->name,
                 'customer_phone' => $this->from,
-                'message_body' => $this->messageBody,
                 'wamid' => $wamid,
             ]);
         } catch (\Exception $e) {
@@ -506,30 +510,20 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 'customer_phone' => $this->from,
                 'provider' => $this->store->ai_provider,
                 'error_message' => $e->getMessage(),
-                'user_message' => $this->messageBody,
+                'message_length' => mb_strlen($this->messageBody ?? ''),
                 'attempt' => $this->attempts(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            // Send graceful fallback message to customer only on API failures
-            $fallbackMessage = 'Lo siento, estoy experimentando dificultades técnicas. Por favor intenta más tarde.';
-            try {
-                WhatsAppService::sendMessage($this->from, $fallbackMessage, $this->store);
-            } catch (\Exception $sendError) {
-                Log::error('Failed to send fallback message', [
-                    'store_id' => $this->store->id,
-                    'customer_phone' => $this->from,
-                    'error' => $sendError->getMessage(),
-                ]);
-            }
-
-            // Re-throw to mark job as failed after max retries
+            // Re-throw so the queue retries; the customer is only told about
+            // the problem once the job is given up (see failed()), not on
+            // every attempt.
             throw $e;
         }
     }
 
     /**
-     * Handle a job failure.
+     * Handle a job failure: the message is given up, so apologize once.
      */
     public function failed(\Throwable $exception): void
     {
@@ -539,6 +533,17 @@ class ProcessWhatsAppMessage implements ShouldQueue
             'customer_phone' => $this->from,
             'exception' => $exception->getMessage(),
         ]);
+
+        $fallbackMessage = 'Lo siento, estoy experimentando dificultades técnicas. Por favor intenta más tarde.';
+        try {
+            WhatsAppService::sendMessage($this->from, $fallbackMessage, $this->store);
+        } catch (\Exception $sendError) {
+            Log::error('Failed to send fallback message', [
+                'store_id' => $this->store->id,
+                'customer_phone' => $this->from,
+                'error' => $sendError->getMessage(),
+            ]);
+        }
     }
 
 
@@ -556,7 +561,6 @@ class ProcessWhatsAppMessage implements ShouldQueue
             Log::info("CONTEXT_RETRIEVAL: Starting product context retrieval", [
                 'store_id' => $this->store->id,
                 'store_name' => $this->store->name,
-                'message' => $this->messageBody,
                 'has_product_context_param' => $this->productContext !== null,
             ]);
 
@@ -594,7 +598,6 @@ class ProcessWhatsAppMessage implements ShouldQueue
             // Otherwise, search for products mentioned in the message
             Log::info("CONTEXT_RETRIEVAL: Searching for products by message", [
                 'store_id' => $this->store->id,
-                'message' => $this->messageBody,
             ]);
 
             $finder = new ProductFinderService();
@@ -643,7 +646,6 @@ class ProcessWhatsAppMessage implements ShouldQueue
             if ($result['products']->isEmpty()) {
                 Log::warning("CONTEXT_RETRIEVAL: Search returned no products, forcing full catalog fetch", [
                     'store_id' => $this->store->id,
-                    'original_message' => $this->messageBody,
                 ]);
 
                 // Force fetch all products for this store (ProductFinderService already handles this fallback)
@@ -907,11 +909,11 @@ PROMPT;
                 [] // No history for this extraction request
             );
 
-            // Log raw response for debugging
+            // Length only: the extraction carries the customer's name and address.
             Log::info('Raw AI Lead Extraction Response', [
                 'store_id' => $this->store->id,
                 'customer_phone' => $this->from,
-                'raw_response' => substr($jsonResponse, 0, 500), // First 500 chars
+                'raw_response_length' => strlen($jsonResponse),
             ]);
 
             // Parse JSON response
@@ -933,8 +935,8 @@ PROMPT;
                     // Check if product appears in recent context (case-insensitive)
                     if (stripos($recentText, $productName) === false) {
                         Log::warning('Extracted product not in recent context', [
+                            'store_id' => $this->store->id,
                             'extracted_product' => $productName,
-                            'recent_text' => substr($recentText, 0, 200),
                         ]);
                         
                         // Fall back to regex extraction which is more conservative
@@ -952,13 +954,13 @@ PROMPT;
                 Log::info('Lead Data Successfully Extracted via AI', [
                     'store_id' => $this->store->id,
                     'customer_phone' => $this->from,
-                    'customer_name' => $leadData['customer_name'],
+                    'has_customer_name' => $leadData['customer_name'] !== null,
                     'product_service_name' => $leadData['product_service_name'],
                 ]);
             } else {
                 Log::warning('Failed to parse AI extraction JSON', [
                     'store_id' => $this->store->id,
-                    'response' => substr($jsonResponse, 0, 200),
+                    'response_length' => strlen($jsonResponse),
                 ]);
                 
                 // Fall back to regex extraction

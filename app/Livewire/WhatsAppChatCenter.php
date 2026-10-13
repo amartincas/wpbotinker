@@ -212,7 +212,7 @@ class WhatsAppChatCenter extends Component
             if ($firstMessage) {
                 $storeId = $firstMessage->store_id;
             }
-        } elseif ($this->filterStoreId) {
+        } elseif ($isSuperAdmin && $this->filterStoreId) {
             // Using filtered store
             $storeId = $this->filterStoreId;
         } else {
@@ -286,7 +286,7 @@ class WhatsAppChatCenter extends Component
                 Log::warning('sendMessage: Cannot determine store for superuser without existing messages');
                 return;
             }
-        } elseif ($this->filterStoreId) {
+        } elseif ($isSuperAdmin && $this->filterStoreId) {
             // Using filtered store
             $storeId = $this->filterStoreId;
         } else {
@@ -426,7 +426,11 @@ class WhatsAppChatCenter extends Component
      */
     public function updatedFilterStoreId($value): void
     {
+        // Livewire assigns the property before this hook runs, so a
+        // non-admin's value must be discarded here, not just ignored.
         if (!Auth::user()?->is_super_admin) {
+            $this->filterStoreId = null;
+
             return;
         }
 
@@ -463,7 +467,7 @@ class WhatsAppChatCenter extends Component
             $storeId = $targetPhone
                 ? WhatsAppMessage::query()->where('customer_phone', $targetPhone)->value('store_id')
                 : null;
-        } elseif ($this->filterStoreId) {
+        } elseif ($isSuperAdmin && $this->filterStoreId) {
             $storeId = $this->filterStoreId;
         } else {
             $storeId = Auth::user()?->store_id;
@@ -516,13 +520,17 @@ class WhatsAppChatCenter extends Component
             'product_service_name'   => $lead?->product_service_name   ?? '',
         ];
 
+        // Metadata only: the variable values and the lead data carry the
+        // customer's personal data (name, tracking number...).
         Log::info('DEBUG sendTemplate', [
+            'store_id' => $storeId,
+            'template_id' => $template->id,
             'selected_phone' => $this->selectedPhone,
             'external_phone' => $externalPhone,
             'target_phone' => $targetPhone,
-            'customValues' => $customValues,
+            'custom_value_count' => count($customValues),
             'parametersMap' => $parametersMap,
-            'leadData' => $leadData,
+            'lead_id' => $lead?->id,
         ]);
 
         $resolvedValues = [];
@@ -535,7 +543,7 @@ class WhatsAppChatCenter extends Component
         }
         ksort($resolvedValues);
 
-        Log::info('DEBUG resolvedValues', ['resolvedValues' => array_values($resolvedValues)]);
+        Log::info('DEBUG resolvedValues', ['resolved_value_count' => count($resolvedValues)]);
 
         $conversation = Conversation::firstOrCreate([
             'store_id' => $storeId,

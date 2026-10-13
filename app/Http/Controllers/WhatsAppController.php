@@ -16,6 +16,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
 
 class WhatsAppController extends Controller
 {
@@ -141,6 +142,29 @@ class WhatsAppController extends Controller
     $message = $messages[0];
     $phoneId = $message['id'] ?? null; // Este es el WAMID único de Meta
 
+    // Rate limit por tienda+contacto: protege el costo de IA frente a un
+    // solo número que inunde una tienda. Va ANTES del control de
+    // idempotencia: un mensaje rechazado aquí nunca queda marcado como
+    // procesado, así el reintento posterior de Meta sí se procesa.
+    // RateLimiter::hit() incrementa de forma atómica y devuelve el conteo.
+    if (!empty($message['from'])) {
+        $hits = RateLimiter::hit(
+            "wa-contact:{$store->id}:{$message['from']}",
+            (int) config('services.meta.contact_rate_limit_minutes') * 60
+        );
+
+        if ($hits > (int) config('services.meta.contact_rate_limit_max')) {
+            Log::warning('WHATSAPP_CONTACT_RATE_LIMITED', [
+                'store_id' => $store->id,
+                'customer_phone' => $message['from'],
+                'message_id' => $phoneId,
+                'hits' => $hits,
+            ]);
+
+            return response('Too Many Requests', 429);
+        }
+    }
+
     // 🔥 CONTROL DE IDEMPOTENCIA: Bloquear reintentos de Meta de inmediato
     //
     // IMPORTANTE: Cache::add() es atómico (check-and-set en una sola operación).
@@ -159,8 +183,13 @@ class WhatsAppController extends Controller
         }
     }
 
-    // Si pasa los filtros, guardamos el log real del mensaje entrante
-    Log::info('Raw WhatsApp Webhook Payload', ['payload' => $payload]);
+    // Si pasa los filtros, registramos solo metadatos del mensaje entrante —
+    // nunca el payload crudo: trae el texto del cliente y su nombre de perfil.
+    Log::info('WhatsApp webhook message received', [
+        'store_id' => $store->id,
+        'message_id' => $phoneId,
+        'type' => $message['type'] ?? null,
+    ]);
 
     // $store was already resolved and its signature verified at the top of
     // this method.
@@ -190,8 +219,6 @@ class WhatsAppController extends Controller
     if (!$fromPhone || (!$body && !$mediaId)) {
         return response('OK', 200);
     }
-
-    Log::info("CONTENIDO REAL: " . $body);
 
     // Find or create conversation
     $conversation = Conversation::firstOrCreate(
@@ -294,7 +321,10 @@ class WhatsAppController extends Controller
         // ── 2. Load & authorise ───────────────────────────────────────────────
         // The authenticated user's store_id gates both records, ensuring a store
         // operator can never send a template or contact a lead from another tenant.
-        $lead = Lead::findOrFail($validated['lead_id']);
+        // Super admins may act on any store (same rule as the Filament resources).
+        $lead = Lead::query()
+            ->when(! $user->is_super_admin, fn ($query) => $query->where('store_id', $storeId))
+            ->findOrFail($validated['lead_id']);
 
         /** @var \App\Models\Store $store */
         $store = $lead->store;   // eager via relationship

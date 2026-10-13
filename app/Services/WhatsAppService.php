@@ -162,11 +162,6 @@ class WhatsAppService
                 'variable_count' => count($variables),
             ]);
 
-            Log::debug('WhatsApp full payload', [
-                'url' => $url,
-                'payload' => $payload
-            ]);
-
             $response = Http::withToken($store->wa_access_token)
                 ->timeout(15)
                 ->post($url, $payload);
@@ -545,7 +540,7 @@ class WhatsAppService
             Log::info('AI Response Image Processing', [
                 'store_id' => $store->id,
                 'customer_number' => $customerNumber,
-                'response_text' => $responseText,
+                'response_length' => strlen($responseText),
                 'found_img_tags' => $matches[1] ?? [],
             ]);
 
@@ -557,7 +552,11 @@ class WhatsAppService
                         'customer_number' => $customerNumber,
                     ]);
 
-                    $image = ProductImage::find($imageId);
+                    // Only images of this store's own products: the tag comes from
+                    // AI output, which a customer can steer into echoing any id.
+                    $image = ProductImage::whereKey($imageId)
+                        ->whereHas('product', fn ($query) => $query->where('store_id', $store->id))
+                        ->first();
 
                     if ($image) {
                         Log::info('ProductImage found', [

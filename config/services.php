@@ -35,4 +35,11 @@ return [
         ],
     ],
 
+    // Inbound WhatsApp messages accepted per store+contact before the
+    // webhook answers 429 (protects AI cost). Status callbacks are exempt.
+    'meta' => [
+        'contact_rate_limit_max' => (int) env('WHATSAPP_CONTACT_RATE_LIMIT_MAX', 30),
+        'contact_rate_limit_minutes' => (int) env('WHATSAPP_CONTACT_RATE_LIMIT_MINUTES', 1),
+    ],
+
 ];

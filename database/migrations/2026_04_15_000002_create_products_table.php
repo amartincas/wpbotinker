@@ -17,7 +17,11 @@ return new class extends Migration
             $table->integer('stock')->default(0);
             $table->timestamps();
 
-            $table->fullText(['name', 'description']);
+            // SQLite (used by the test suite) has no FULLTEXT support. MySQL/
+            // MariaDB keep creating the index exactly as before.
+            if (in_array(Schema::getConnection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+                $table->fullText(['name', 'description']);
+            }
         });
     }
 
