@@ -25,7 +25,9 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['customer_id', 'active_marker']);
-            $table->index(['customer_id', 'fact_key', 'grantee_domain_key']);
+            // Explicit name: the generated one (66 chars) exceeds the 64-char
+            // identifier limit of MySQL/MariaDB.
+            $table->index(['customer_id', 'fact_key', 'grantee_domain_key'], 'customer_fact_shares_customer_fact_grantee_index');
         });
     }
 
