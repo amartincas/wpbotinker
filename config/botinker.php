@@ -16,4 +16,29 @@ return [
 
     'domains' => [],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Person facts
+    |--------------------------------------------------------------------------
+    |
+    | Facts about the customer that any domain may reference (and, with the
+    | customer's permission, share). Defined once here so every domain gives
+    | them the same meaning. Types: date, time, text, number. Sensitive facts
+    | get stricter handling (never shown in full outside the conversation).
+    |
+    */
+
+    'person_facts' => [
+        'name' => [
+            'type' => 'text',
+            'question' => '¿Cómo te llamas?',
+            'sensitive' => false,
+        ],
+        'birth_date' => [
+            'type' => 'date',
+            'question' => '¿Cuál es tu fecha de nacimiento? (día/mes/año)',
+            'sensitive' => true,
+        ],
+    ],
+
 ];

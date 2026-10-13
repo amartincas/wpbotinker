@@ -14,6 +14,7 @@ use App\Services\AI\GeminiService;
 use App\Models\Lead;
 use App\Observers\LeadObserver;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Memory\PersonFacts;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -22,8 +23,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        // Domain modules for stores in 'knowledge' mode (config/botinker.php).
-        $this->app->singleton(DomainRegistry::class, fn ($app) => new DomainRegistry($app, config('botinker.domains', [])));
+        // Domain modules for stores in 'knowledge' mode and the person fact
+        // catalog they reference (config/botinker.php).
+        $this->app->singleton(PersonFacts::class, fn () => new PersonFacts(config('botinker.person_facts', [])));
+        $this->app->singleton(DomainRegistry::class, fn ($app) => new DomainRegistry($app, config('botinker.domains', []), $app->make(PersonFacts::class)));
     }
 
     /**

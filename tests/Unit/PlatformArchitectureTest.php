@@ -25,4 +25,15 @@ arch('the Core does not depend on the sales flow or the admin UI')
 
 arch('domain modules implement the Core contract')
     ->expect('Tests\Support\Domains')
-    ->toImplement('App\Platform\Contracts\DomainModule');
+    ->toImplement('App\Platform\Contracts\DomainModule')
+    ->ignoring('Tests\Support\Domains\Capabilities');
+
+arch('domain capabilities implement the Core contract')
+    ->expect('Tests\Support\Domains\Capabilities')
+    ->toImplement('App\Platform\Contracts\Capability');
+
+// Facts reach a domain only as arguments: a domain never reads customer
+// memory or the database on its own.
+arch('domains do not access models or the database directly')
+    ->expect(['App\Domains', 'Tests\Support\Domains'])
+    ->not->toUse(['App\Models', 'Illuminate\Support\Facades\DB', 'Illuminate\Database']);
