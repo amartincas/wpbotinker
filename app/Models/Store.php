@@ -23,10 +23,22 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'meta_capi_access_token',
     'meta_capi_currency',
     'alert_phone',
+    'conversation_mode',
 ])]
 class Store extends Model
 {
     use HasFactory;
+
+    /** The existing commercial flow (default). */
+    public const MODE_SALES = 'sales';
+
+    /** Domain conversation pipeline (App\Platform\Conversation\ConversationPipeline). */
+    public const MODE_KNOWLEDGE = 'knowledge';
+
+    public function usesKnowledgeMode(): bool
+    {
+        return $this->conversation_mode === self::MODE_KNOWLEDGE;
+    }
 
     protected function casts(): array
     {

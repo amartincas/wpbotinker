@@ -13,6 +13,7 @@ use Livewire\Livewire;
 use App\Services\AI\GeminiService;
 use App\Models\Lead;
 use App\Observers\LeadObserver;
+use App\Platform\Domains\DomainRegistry;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -21,7 +22,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Domain modules for stores in 'knowledge' mode (config/botinker.php).
+        $this->app->singleton(DomainRegistry::class, fn ($app) => new DomainRegistry($app, config('botinker.domains', [])));
     }
 
     /**

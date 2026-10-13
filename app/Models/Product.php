@@ -19,6 +19,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'faq_context',
     'required_customer_info',
     'meta_ad_ids',
+    'domain_key',
+    'aliases',
 ])]
 class Product extends Model
 {
@@ -37,6 +39,7 @@ class Product extends Model
             'stock' => 'integer',
             'type' => 'string',
             'meta_ad_ids' => 'array',
+            'aliases' => 'array',
         ];
     }
 

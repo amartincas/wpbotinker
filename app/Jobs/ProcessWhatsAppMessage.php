@@ -12,6 +12,7 @@ use App\Services\AI\OpenAIService;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
 use App\Services\Inventory\ProductFinderService;
+use App\Platform\Conversation\ConversationPipeline;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
@@ -202,6 +203,14 @@ class ProcessWhatsAppMessage implements ShouldQueue
                         Storage::disk('local')->delete($localPath);
                     }
                 }
+            }
+
+            // Stores in 'knowledge' mode use the domain conversation pipeline.
+            // Everything below this branch is the sales flow, unchanged.
+            if ($this->store->usesKnowledgeMode()) {
+                app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext);
+
+                return;
             }
 
             // Retrieve product context at the beginning

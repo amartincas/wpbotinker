@@ -12,6 +12,7 @@ class WhatsAppMessage extends Model
         'store_id',
         'customer_phone',
         'role',
+        'domain_key',
         'content',
         'wamid',
         'status',
