@@ -26,7 +26,7 @@ class IngestKnowledge extends Command
         {path : Archivo o carpeta (.md, .markdown, .html, .htm, .txt)}
         {--product= : ID del producto (por defecto, conocimiento de todo el dominio)}
         {--title= : Título de la fuente (solo para un archivo; por defecto, el nombre del archivo)}
-        {--origin= : Identificador estable de la fuente (solo para un archivo; por defecto, su ruta relativa)}
+        {--origin= : Identificador lógico estable de la fuente (solo para un archivo; por defecto, la ruta real del archivo)}
         {--license= : Licencia o procedencia del contenido, p. ej. "propio"}
         {--language=es : Idioma del contenido}
         {--type= : Forzar el tipo: markdown, html o text}';
@@ -42,6 +42,9 @@ class IngestKnowledge extends Command
     ];
 
     private const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+    /** knowledge_sources.origin is a VARCHAR(191). */
+    private const MAX_ORIGIN_LENGTH = 191;
 
     public function handle(KnowledgeIngestor $ingestor, DomainRegistry $domains): int
     {
@@ -97,6 +100,14 @@ class IngestKnowledge extends Command
             return self::FAILURE;
         }
 
+        $origin = $this->option('origin');
+
+        if ($origin !== null && (trim($origin) === '' || mb_strlen($origin) > self::MAX_ORIGIN_LENGTH)) {
+            $this->error('--origin debe tener entre 1 y '.self::MAX_ORIGIN_LENGTH.' caracteres.');
+
+            return self::FAILURE;
+        }
+
         $files = $isFolder ? $this->filesIn($path) : [basename($path) => new SplFileInfo($path)];
 
         if (! $isFolder && $type === null && $this->typeOf($files[basename($path)]) === null) {
@@ -132,7 +143,7 @@ class IngestKnowledge extends Command
                     $this->option('title') ?? pathinfo($relativePath, PATHINFO_FILENAME),
                     $fileType,
                     $content,
-                    $this->option('origin') ?? $relativePath,
+                    $origin ?? $this->defaultOrigin($file),
                     $this->option('license'),
                     (string) $this->option('language'),
                 );
@@ -171,6 +182,26 @@ class IngestKnowledge extends Command
         ksort($files);
 
         return $files;
+    }
+
+    /**
+     * The file's real path, so two different files never share an origin
+     * (same name in different folders) while re-ingesting the same file
+     * keeps it — whether it is ingested alone or within its folder. A path
+     * too long for the column is shortened deterministically: its tail plus
+     * a hash of the full path.
+     */
+    private function defaultOrigin(SplFileInfo $file): string
+    {
+        $origin = 'file:'.str_replace('\\', '/', $file->getRealPath());
+
+        if (mb_strlen($origin) <= self::MAX_ORIGIN_LENGTH) {
+            return $origin;
+        }
+
+        $hash = '#'.substr(hash('sha256', $origin), 0, 16);
+
+        return 'file:…'.mb_substr($origin, -(self::MAX_ORIGIN_LENGTH - mb_strlen('file:…') - mb_strlen($hash))).$hash;
     }
 
     private function typeOf(SplFileInfo $file): ?string

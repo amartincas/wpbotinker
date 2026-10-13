@@ -28,6 +28,12 @@ afterEach(function () {
     File::deleteDirectory($this->dir);
 });
 
+/** The default origin the command derives from a file path. */
+function fileOrigin(string $path): string
+{
+    return 'file:'.str_replace('\\', '/', realpath($path));
+}
+
 function knowledgeFile(string $dir, string $relative, string $content): string
 {
     $path = $dir.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
@@ -57,7 +63,7 @@ describe('botinker:knowledge:ingest', function () {
         expect($code)->toBe(0)
             ->and($output)->toContain("guia.md: fuente #{$source->id} v1 (2 fragmentos)")
             ->and($source->only(['store_id', 'domain_key', 'product_id', 'title', 'origin', 'license', 'language', 'source_type', 'status']))
-            ->toBe(['store_id' => $this->store->id, 'domain_key' => 'oracle', 'product_id' => null, 'title' => 'Guía', 'origin' => 'guia.md', 'license' => 'propio', 'language' => 'es', 'source_type' => 'markdown', 'status' => 'active']);
+            ->toBe(['store_id' => $this->store->id, 'domain_key' => 'oracle', 'product_id' => null, 'title' => 'Guía', 'origin' => fileOrigin($path), 'license' => 'propio', 'language' => 'es', 'source_type' => 'markdown', 'status' => 'active']);
     });
 
     it('reports an unchanged file instead of storing it twice', function () {
@@ -83,21 +89,106 @@ describe('botinker:knowledge:ingest', function () {
             ->and(KnowledgeSource::orderBy('version')->pluck('status')->all())->toBe(['retired', 'active']);
     });
 
-    it('ingests a folder recursively, using relative paths as origins and skipping unsupported files', function () {
-        knowledgeFile($this->dir, 'a.md', "# A\n\nTexto A.");
-        knowledgeFile($this->dir, 'sub/b.html', '<h1>B</h1><p>Texto B.</p>');
-        knowledgeFile($this->dir, 'sub/c.txt', 'Texto C.');
+    it('ingests a folder recursively, using each file real path as origin and skipping unsupported files', function () {
+        $a = knowledgeFile($this->dir, 'a.md', "# A\n\nTexto A.");
+        $b = knowledgeFile($this->dir, 'sub/b.html', '<h1>B</h1><p>Texto B.</p>');
+        $c = knowledgeFile($this->dir, 'sub/c.txt', 'Texto C.');
         knowledgeFile($this->dir, 'd.pdf', '%PDF-1.4');
 
         [$code, $output] = runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $this->dir]);
 
         expect($code)->toBe(0)
             ->and($output)->toContain('Omitido (extensión no soportada): d.pdf')
+            ->and($output)->toContain('sub/b.html: fuente #')
             ->and(KnowledgeSource::orderBy('origin')->get(['origin', 'source_type'])->toArray())->toBe([
-                ['origin' => 'a.md', 'source_type' => 'markdown'],
-                ['origin' => 'sub/b.html', 'source_type' => 'html'],
-                ['origin' => 'sub/c.txt', 'source_type' => 'text'],
+                ['origin' => fileOrigin($a), 'source_type' => 'markdown'],
+                ['origin' => fileOrigin($b), 'source_type' => 'html'],
+                ['origin' => fileOrigin($c), 'source_type' => 'text'],
             ]);
+    });
+
+    it('keeps re-ingesting the same folder idempotent and versions only what changed', function () {
+        knowledgeFile($this->dir, 'a.md', "# A\n\nTexto A.");
+        $b = knowledgeFile($this->dir, 'sub/b.md', "# B\n\nTexto B.");
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $this->dir]);
+
+        File::put($b, "# B\n\nTexto B cambiado.");
+        [$code, $output] = runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $this->dir]);
+
+        expect($code)->toBe(0)
+            ->and($output)->toContain('a.md: sin cambios')
+            ->and($output)->toContain('sub/b.md: fuente #')->toContain('v2')
+            ->and(KnowledgeSource::where('status', 'active')->count())->toBe(2)
+            ->and(KnowledgeSource::where('status', 'retired')->sole()->origin)->toBe(fileOrigin($b));
+    });
+
+    it('never treats two different files with the same name as the same source', function () {
+        $one = knowledgeFile($this->dir, 'uno/intro.md', "# Intro\n\nPrimera introducción.");
+        $two = knowledgeFile($this->dir, 'dos/intro.md', "# Intro\n\nSegunda introducción.");
+
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $one]);
+        [$code, $output] = runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $two]);
+
+        expect($code)->toBe(0)
+            ->and($output)->toContain('v1')
+            ->and(KnowledgeSource::orderBy('id')->get(['origin', 'version', 'status'])->toArray())->toBe([
+                ['origin' => fileOrigin($one), 'version' => 1, 'status' => 'active'],
+                ['origin' => fileOrigin($two), 'version' => 1, 'status' => 'active'],
+            ]);
+    });
+
+    it('gives a file the same origin whether ingested alone or within its folder', function () {
+        $path = knowledgeFile($this->dir, 'sub/guia.md', "# Uno\n\nTexto.");
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $this->dir]);
+
+        File::put($path, "# Uno\n\nTexto actualizado.");
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $path]);
+
+        expect(KnowledgeSource::orderBy('version')->get(['origin', 'version', 'status'])->toArray())->toBe([
+            ['origin' => fileOrigin($path), 'version' => 1, 'status' => 'retired'],
+            ['origin' => fileOrigin($path), 'version' => 2, 'status' => 'active'],
+        ]);
+    });
+
+    it('versions a logical source by --origin across different files', function () {
+        $draft = knowledgeFile($this->dir, 'borrador/guia.md', "# Guía\n\nBorrador.");
+        $final = knowledgeFile($this->dir, 'final/guia-v2.md', "# Guía\n\nVersión final.");
+
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $draft, '--origin' => 'guia-oficial']);
+        [$code] = runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $final, '--origin' => 'guia-oficial']);
+
+        expect($code)->toBe(0)
+            ->and(KnowledgeSource::orderBy('version')->get(['origin', 'version', 'status'])->toArray())->toBe([
+                ['origin' => 'guia-oficial', 'version' => 1, 'status' => 'retired'],
+                ['origin' => 'guia-oficial', 'version' => 2, 'status' => 'active'],
+            ]);
+    });
+
+    it('rejects an --origin that is empty or too long for the column', function () {
+        $path = knowledgeFile($this->dir, 'guia.md', "# Uno\n\nTexto.");
+
+        foreach (['   ', str_repeat('o', 192)] as $origin) {
+            [$code, $output] = runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $path, '--origin' => $origin]);
+            expect($code)->toBe(1)->and($output)->toContain('--origin debe tener entre 1 y 191 caracteres');
+        }
+
+        expect(KnowledgeSource::count())->toBe(0);
+    });
+
+    it('shortens a default origin that would not fit the column, deterministically', function () {
+        $deep = str_repeat('carpeta-muy-larga/', 12).'guia.md';
+        $path = knowledgeFile($this->dir, $deep, "# Uno\n\nTexto.");
+
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $path]);
+        File::put($path, "# Uno\n\nTexto actualizado.");
+        runCommand('botinker:knowledge:ingest', ['store' => $this->store->id, 'domain' => 'oracle', 'path' => $path]);
+
+        $origins = KnowledgeSource::orderBy('version')->pluck('origin');
+        expect(mb_strlen(fileOrigin($path)))->toBeGreaterThan(191)
+            ->and(mb_strlen($origins[0]))->toBeLessThanOrEqual(191)
+            ->and($origins[0])->toStartWith('file:…')->toEndWith(substr($origins[0], -17))
+            ->and($origins[1])->toBe($origins[0])
+            ->and(KnowledgeSource::where('status', 'active')->sole()->version)->toBe(2);
     });
 
     it('attaches a source to a product of the same store and domain', function () {
