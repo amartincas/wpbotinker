@@ -98,7 +98,14 @@ class ConversationPipeline
 
         $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
         $computed = $product && $domain ? $this->capabilities->run($customer, $product, $domain) : null;
-        $fragments = $domain ? $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody) : collect();
+        // A computed result that names its knowledge entries gets exactly
+        // those; otherwise knowledge is searched with the message, as before.
+        $keyed = $computed !== null && $computed->knowledgeKeys !== [];
+        $fragments = match (true) {
+            $domain === null => collect(),
+            $keyed => $this->knowledge->retrieveByKeys($store, $domain->key(), $product, $computed->knowledgeKeys),
+            default => $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody),
+        };
 
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
@@ -113,6 +120,7 @@ class ConversationPipeline
             'product_id' => $product?->id,
             'fact_keys' => array_keys($facts),
             'capability_key' => $computed ? $product->capability_key : null,
+            'knowledge_retrieval' => $keyed ? 'keys' : 'message',
             'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
         ]);
 

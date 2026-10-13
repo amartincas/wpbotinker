@@ -6,6 +6,7 @@ use App\Models\KnowledgeChunk;
 use App\Models\KnowledgeSource;
 use App\Models\Product;
 use App\Models\Store;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
@@ -21,6 +22,9 @@ use Illuminate\Support\Str;
 class KnowledgeRetriever
 {
     private const MAX_CANDIDATES = 2000;
+
+    /** Upper bound of keyed fragments, so a result cannot flood the prompt. */
+    private const MAX_KEYED_FRAGMENTS = 12;
 
     private const MIN_TERM_LENGTH = 3;
 
@@ -41,11 +45,7 @@ class KnowledgeRetriever
             return collect();
         }
 
-        return KnowledgeChunk::query()
-            ->where('store_id', $store->id)
-            ->where('domain_key', $domainKey)
-            ->where(fn ($query) => $query->whereNull('product_id')->when($product, fn ($q) => $q->orWhere('product_id', $product->id)))
-            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE))
+        return $this->scope($store, $domainKey, $product)
             ->orderBy('id')
             ->limit(self::MAX_CANDIDATES)
             ->get()
@@ -55,6 +55,62 @@ class KnowledgeRetriever
             ->take($limit)
             ->map(fn ($scored) => $scored[0])
             ->values();
+    }
+
+    /**
+     * Chunks whose heading is exactly one of $keys — ignoring only case,
+     * accents and extra whitespace, never partial matches. Same scope as
+     * retrieve(). Ordered by key priority; within a key, the current
+     * product's chunks before the domain's, each in document order.
+     *
+     * @param  list<string>  $keys
+     * @return Collection<int, KnowledgeChunk>
+     */
+    public function retrieveByKeys(Store $store, string $domainKey, ?Product $product, array $keys, int $limit = self::MAX_KEYED_FRAGMENTS): Collection
+    {
+        $priority = [];
+
+        foreach ($keys as $key) {
+            $normalized = $this->normalizeHeading((string) $key);
+
+            if ($normalized !== '' && ! isset($priority[$normalized])) {
+                $priority[$normalized] = count($priority);
+            }
+        }
+
+        if ($priority === []) {
+            return collect();
+        }
+
+        return $this->scope($store, $domainKey, $product)
+            ->whereNotNull('heading')
+            ->get()
+            ->filter(fn (KnowledgeChunk $chunk) => isset($priority[$this->normalizeHeading($chunk->heading)]))
+            ->sort(fn (KnowledgeChunk $a, KnowledgeChunk $b) => [
+                $priority[$this->normalizeHeading($a->heading)], $a->product_id === null, $a->knowledge_source_id, $a->position,
+            ] <=> [
+                $priority[$this->normalizeHeading($b->heading)], $b->product_id === null, $b->knowledge_source_id, $b->position,
+            ])
+            ->take($limit)
+            ->values();
+    }
+
+    /**
+     * This store and domain; domain-level chunks plus the current product's;
+     * active sources only.
+     */
+    private function scope(Store $store, string $domainKey, ?Product $product): Builder
+    {
+        return KnowledgeChunk::query()
+            ->where('store_id', $store->id)
+            ->where('domain_key', $domainKey)
+            ->where(fn ($query) => $query->whereNull('product_id')->when($product, fn ($q) => $q->orWhere('product_id', $product->id)))
+            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE));
+    }
+
+    private function normalizeHeading(string $heading): string
+    {
+        return trim(preg_replace('/\s+/', ' ', Str::ascii(mb_strtolower($heading))));
     }
 
     /**

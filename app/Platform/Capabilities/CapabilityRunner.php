@@ -97,7 +97,7 @@ class CapabilityRunner
         if ($cached) {
             Log::info('CAPABILITY_REUSED', ['capability_key' => $capability->key(), 'customer_id' => $customer->id, 'result_id' => $cached->id]);
 
-            return new CapabilityResult($cached->payload['data'], $cached->payload['summary']);
+            return new CapabilityResult($cached->payload['data'], $cached->payload['summary'], $cached->payload['knowledge_keys'] ?? []);
         }
 
         $result = $capability->run(array_map(fn (CustomerFact $row) => $row->plainValue(), $inputs));
@@ -117,7 +117,7 @@ class CapabilityRunner
                     'domain_key' => $domain->key(),
                     'capability_version' => $capability->version(),
                     'input_fact_ids' => $inputIds,
-                    'payload' => ['data' => $result->data, 'summary' => $result->summary],
+                    'payload' => ['data' => $result->data, 'summary' => $result->summary, 'knowledge_keys' => $result->knowledgeKeys],
                     'computed_at' => now(),
                 ],
             );
