@@ -73,6 +73,12 @@ class ProductResolver
         return ProductResolution::clarify(($byVocabulary->isNotEmpty() ? $byVocabulary : $catalog)->take(self::MAX_OPTIONS));
     }
 
+    /** A product of this store's domain catalog, or null (e.g. deleted since). */
+    public function catalogProduct(Store $store, int $productId): ?Product
+    {
+        return $this->catalog($store)->firstWhere('id', $productId);
+    }
+
     /**
      * Products of this store that belong to a registered domain. Products
      * whose domain_key is not registered are ignored, never guessed.

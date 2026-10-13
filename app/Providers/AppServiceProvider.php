@@ -12,6 +12,7 @@ use Illuminate\Validation\Rules\Password;
 use Livewire\Livewire;
 use App\Services\AI\GeminiService;
 use App\Models\Lead;
+use App\Models\Product;
 use App\Observers\LeadObserver;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Memory\PersonFacts;
@@ -23,6 +24,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Exception traces must not carry function arguments: they can hold
+        // customer messages and personal facts, and traces reach the logs.
+        ini_set('zend.exception_ignore_args', '1');
+
         // Domain modules for stores in 'knowledge' mode and the person fact
         // catalog they reference (config/botinker.php).
         $this->app->singleton(PersonFacts::class, fn () => new PersonFacts(config('botinker.person_facts', [])));
@@ -48,6 +53,17 @@ class AppServiceProvider extends ServiceProvider
 
         // Sends every new Lead (bot, manual, backfill) to Meta's Conversions API
         Lead::observe(LeadObserver::class);
+
+        // A domain product may only require facts its domain declares, from
+        // any write path (panel, seeders, scripts). Sales products and
+        // products of unregistered domains are not checked.
+        Product::saving(function (Product $product) {
+            $registry = $this->app->make(DomainRegistry::class);
+
+            if ($product->domain_key && $registry->has($product->domain_key)) {
+                $registry->assertProductConfiguration($product->domain_key, $product->required_facts ?? []);
+            }
+        });
     }
 
     /**

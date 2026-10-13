@@ -19,7 +19,7 @@ class PersonFacts
     private const TEXT_MAX_LENGTH = 255;
 
     /**
-     * @param  array<string, array{type: string, question: string, sensitive?: bool}>  $catalog
+     * @param  array<string, array{type: string, question: string, label?: string, sensitive?: bool}>  $catalog
      */
     public function __construct(private readonly array $catalog) {}
 
@@ -44,6 +44,12 @@ class PersonFacts
     public function question(string $key): string
     {
         return $this->entry($key)['question'];
+    }
+
+    /** Human-readable name ("fecha de nacimiento"), used in permission questions. */
+    public function label(string $key): string
+    {
+        return $this->entry($key)['label'] ?? str_replace('_', ' ', $key);
     }
 
     public function isSensitive(string $key): bool

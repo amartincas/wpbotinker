@@ -31,11 +31,13 @@ return [
     'person_facts' => [
         'name' => [
             'type' => 'text',
+            'label' => 'nombre',
             'question' => '¿Cómo te llamas?',
             'sensitive' => false,
         ],
         'birth_date' => [
             'type' => 'date',
+            'label' => 'fecha de nacimiento',
             'question' => '¿Cuál es tu fecha de nacimiento? (día/mes/año)',
             'sensitive' => true,
         ],

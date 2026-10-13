@@ -37,3 +37,24 @@ arch('domain capabilities implement the Core contract')
 arch('domains do not access models or the database directly')
     ->expect(['App\Domains', 'Tests\Support\Domains'])
     ->not->toUse(['App\Models', 'Illuminate\Support\Facades\DB', 'Illuminate\Database']);
+
+arch('domains do not use the memory or knowledge services')
+    ->expect(['App\Domains', 'Tests\Support\Domains'])
+    ->not->toUse([
+        'App\Platform\Memory\CustomerMemory',
+        'App\Platform\Memory\FactCollector',
+        'App\Platform\Knowledge',
+        'App\Platform\Conversation',
+    ]);
+
+// The pipeline orchestrates: memory and knowledge are reached only
+// through their Core services, never through their models.
+arch('the conversation layer does not touch memory or knowledge storage')
+    ->expect('App\Platform\Conversation')
+    ->not->toUse([
+        'App\Models\Customer',
+        'App\Models\CustomerFact',
+        'App\Models\CustomerFactShare',
+        'App\Models\KnowledgeSource',
+        'Illuminate\Support\Facades\DB',
+    ]);

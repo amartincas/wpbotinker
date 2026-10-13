@@ -7,8 +7,10 @@ use App\Models\Conversation;
 use App\Models\Product;
 use App\Models\Store;
 use App\Models\WhatsAppMessage;
-use App\Platform\Contracts\DomainModule;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Knowledge\KnowledgeRetriever;
+use App\Platform\Memory\CustomerMemory;
+use App\Platform\Memory\FactCollector;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
 use Illuminate\Support\Collection;
@@ -16,13 +18,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Conversation flow for stores in 'knowledge' mode (see
- * App\Models\Store::MODE_KNOWLEDGE): resolve the product → ask when the
- * message is ambiguous → otherwise answer with the store persona, the
- * domain rules and the product instructions.
+ * App\Models\Store::MODE_KNOWLEDGE). It only orchestrates Core services, in
+ * order, and holds no domain or memory rules of its own:
  *
- * Skeleton on purpose: no knowledge retrieval, customer memory or domain
- * capabilities yet. It never touches the sales flow (leads, Conversions
- * API, catalog images).
+ *   FactCollector (pending answer) → ProductResolver (or clarification)
+ *   → FactCollector (missing facts) → CustomerMemory (visible facts)
+ *   → KnowledgeRetriever → PromptAssembler → LLM → reply.
+ *
+ * It never touches the sales flow (leads, Conversions API, catalog images).
  */
 class ConversationPipeline
 {
@@ -31,42 +34,71 @@ class ConversationPipeline
     public function __construct(
         private readonly ProductResolver $resolver,
         private readonly DomainRegistry $domains,
+        private readonly CustomerMemory $memory,
+        private readonly FactCollector $facts,
+        private readonly KnowledgeRetriever $knowledge,
+        private readonly PromptAssembler $prompts,
     ) {}
 
-    public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null): void
+    public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
     {
         $conversation = Conversation::firstOrCreate(
             ['store_id' => $store->id, 'customer_phone' => $from],
             ['last_session_at' => now()],
         );
+        $customer = $this->memory->customerFor($store, $from);
 
-        $resolution = $this->resolver->resolve($store, $conversation, $messageBody, $adProductId);
+        $pending = $this->facts->answerPending($conversation, $customer, $messageBody, $wamid);
 
-        if ($resolution->needsClarification()) {
-            $conversation->update(['pending_state' => [
-                'type' => ProductResolver::PENDING_CLARIFICATION,
-                'product_ids' => $resolution->options->pluck('id')->all(),
-            ]]);
-
-            Log::info('PIPELINE_CLARIFICATION', [
-                'store_id' => $store->id,
-                'customer_phone' => $from,
-                'option_count' => $resolution->options->count(),
-            ]);
-
-            $this->reply($store, $from, $messageBody, $this->clarificationText($resolution->options));
+        if ($pending->reply !== null) {
+            $this->reply($store, $from, $messageBody, $pending->reply, $pending->replyDomainKey);
 
             return;
         }
 
-        $product = $resolution->product;
+        $product = $pending->answeredProductId ? $this->resolver->catalogProduct($store, $pending->answeredProductId) : null;
+
+        if ($product === null) {
+            $resolution = $this->resolver->resolve($store, $conversation, $messageBody, $adProductId);
+
+            if ($resolution->needsClarification()) {
+                $conversation->update(['pending_state' => [
+                    'type' => ProductResolver::PENDING_CLARIFICATION,
+                    'product_ids' => $resolution->options->pluck('id')->all(),
+                ]]);
+
+                Log::info('PIPELINE_CLARIFICATION', [
+                    'store_id' => $store->id,
+                    'customer_phone' => $from,
+                    'option_count' => $resolution->options->count(),
+                ]);
+
+                $this->reply($store, $from, $messageBody, $this->clarificationText($resolution->options));
+
+                return;
+            }
+
+            $product = $resolution->product;
+        }
+
         $domain = $product ? $this->domains->get($product->domain_key) : null;
 
         $conversation->update(['current_product_id' => $product?->id, 'pending_state' => null]);
 
+        if ($product && $domain && ($question = $this->facts->require($conversation, $customer, $product, $domain, $pending->rejectionFor($product->id)))) {
+            Log::info('PIPELINE_FACT_REQUESTED', ['store_id' => $store->id, 'customer_phone' => $from, 'domain_key' => $domain->key()]);
+
+            $this->reply($store, $from, $messageBody, $question, $domain->key());
+
+            return;
+        }
+
+        $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
+        $fragments = $domain ? $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody) : collect();
+
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
-            $this->systemPrompt($store, $domain, $product),
+            $this->prompts->build($store, $domain, $product, $facts, $fragments),
             $this->history($store, $from, $domain?->key()),
         );
 
@@ -75,34 +107,11 @@ class ConversationPipeline
             'customer_phone' => $from,
             'domain_key' => $domain?->key(),
             'product_id' => $product?->id,
+            'fact_keys' => array_keys($facts),
+            'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
         ]);
 
         $this->reply($store, $from, $messageBody, $answer, $domain?->key());
-    }
-
-    private function systemPrompt(Store $store, ?DomainModule $domain, ?Product $product): string
-    {
-        $prompt = trim($store->system_prompt ?? '') ?: 'You are an assistant.';
-
-        if ($domain) {
-            $prompt .= "\n\n### DOMINIO: {$domain->label()}\n".trim($domain->promptRules());
-        }
-
-        if ($product) {
-            $prompt .= "\n\n### PRODUCTO: {$product->name}";
-
-            foreach ([
-                'Descripción' => $product->description,
-                'Instrucciones' => $product->ai_sales_strategy,
-                'Reglas' => $product->faq_context,
-            ] as $label => $value) {
-                if (filled($value)) {
-                    $prompt .= "\n{$label}: ".trim($value);
-                }
-            }
-        }
-
-        return $prompt;
     }
 
     /**

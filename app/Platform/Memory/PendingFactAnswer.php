@@ -1,0 +1,50 @@
+<?php
+
+namespace App\Platform\Memory;
+
+/**
+ * What FactCollector made of a message given its own pending question.
+ */
+final class PendingFactAnswer
+{
+    private function __construct(
+        public readonly ?int $answeredProductId,
+        public readonly ?int $rejectedProductId,
+        public readonly ?string $rejectionReason,
+        public readonly ?string $reply,
+        public readonly ?string $replyDomainKey,
+    ) {}
+
+    /** No pending question of FactCollector: resolve the message normally. */
+    public static function none(): self
+    {
+        return new self(null, null, null, null, null);
+    }
+
+    /** The pending question was answered: continue with that product. */
+    public static function answered(int $productId): self
+    {
+        return new self($productId, null, null, null, null);
+    }
+
+    /**
+     * Not a valid answer. The message is resolved normally (the customer
+     * may have changed topic); if it stays on the same product, the
+     * question is asked again with the reason.
+     */
+    public static function rejected(int $productId, string $reason): self
+    {
+        return new self(null, $productId, $reason, null, null);
+    }
+
+    /** Send this text and stop (e.g. permission declined). */
+    public static function reply(string $text, string $domainKey): self
+    {
+        return new self(null, null, null, $text, $domainKey);
+    }
+
+    public function rejectionFor(int $productId): ?string
+    {
+        return $this->rejectedProductId === $productId ? $this->rejectionReason : null;
+    }
+}

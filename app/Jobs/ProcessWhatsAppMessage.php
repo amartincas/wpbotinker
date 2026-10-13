@@ -208,7 +208,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
             // Stores in 'knowledge' mode use the domain conversation pipeline.
             // Everything below this branch is the sales flow, unchanged.
             if ($this->store->usesKnowledgeMode()) {
-                app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext);
+                app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId);
 
                 return;
             }
