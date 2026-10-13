@@ -2,6 +2,7 @@
 
 namespace App\Platform\Memory;
 
+use App\Models\ComputedResult;
 use App\Models\Customer;
 use App\Models\CustomerFact;
 use App\Models\CustomerFactShare;
@@ -80,7 +81,12 @@ class CustomerMemory
                     'collected_at' => now(),
                 ]);
 
-                $current?->update(['superseded_by_id' => $new->id]);
+                if ($current) {
+                    $current->update(['superseded_by_id' => $new->id]);
+                    // Results computed from the old value are wrong now.
+                    $this->forgetResults($customer, fn (ComputedResult $result) => $result->usesFactId($current->id));
+                }
+
                 $current = $new;
             }
 
@@ -99,7 +105,23 @@ class CustomerMemory
      */
     public function visibleFacts(Customer $customer, DomainModule $domain): array
     {
+        return array_map(fn (CustomerFact $row) => $row->plainValue(), $this->visibleFactRows($customer, $domain));
+    }
+
+    /**
+     * The current fact versions the domain may read, by fact key — same
+     * rules as visibleFacts(), but keeping each version's identity.
+     *
+     * @param  list<string>|null  $only  limit to these fact keys
+     * @return array<string, CustomerFact>
+     */
+    public function visibleFactRows(Customer $customer, DomainModule $domain, ?array $only = null): array
+    {
         $definitions = collect($domain->facts())->keyBy('key');
+
+        if ($only !== null) {
+            $definitions = $definitions->only($only);
+        }
 
         if ($definitions->isEmpty()) {
             return [];
@@ -122,11 +144,30 @@ class CustomerMemory
             }
 
             if ($row = $current->get(self::identityKey($fact, $domain->key()))) {
-                $visible[$key] = $row->plainValue();
+                $visible[$key] = $row;
             }
         }
 
         return $visible;
+    }
+
+    /**
+     * Runs $callback in a transaction holding this customer's lock — the
+     * same lock every memory write takes, so the callback sees facts and
+     * shares that cannot change until it commits.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function transaction(Customer $customer, callable $callback): mixed
+    {
+        return DB::transaction(function () use ($customer, $callback) {
+            $this->lock($customer);
+
+            return $callback();
+        });
     }
 
     /** Whether the customer has a current value for the fact, visible or not to this domain. */
@@ -147,8 +188,8 @@ class CustomerMemory
 
     /**
      * Revokes the active share: from now on $domainKey no longer reads the
-     * fact. The fact itself and the shares of other domains are untouched.
-     * (Phase C: also invalidates results computed from it.)
+     * fact, and the results $domainKey computed from it are deleted. The
+     * fact itself, other domains' shares and their results are untouched.
      */
     public function revoke(Customer $customer, string $factKey, string $domainKey): bool
     {
@@ -156,9 +197,15 @@ class CustomerMemory
             $this->lock($customer);
 
             $share = $this->activeShare($customer, $factKey, $domainKey);
-            $share?->update(['revoked_at' => now()]);
 
-            return $share !== null;
+            if ($share === null) {
+                return false;
+            }
+
+            $share->update(['revoked_at' => now()]);
+            $this->forgetResults($customer, fn (ComputedResult $result) => $result->domain_key === $domainKey && $result->usesFactKey($factKey));
+
+            return true;
         });
     }
 
@@ -193,6 +240,22 @@ class CustomerMemory
             ->where('grantee_domain_key', $domainKey)
             ->latest('id')
             ->value('basis') === CustomerFactShare::BASIS_DECLINED;
+    }
+
+    /**
+     * Deletes this customer's computed results matching $affected. A
+     * customer has few results, so they are filtered here rather than with
+     * database-specific JSON queries. Must run inside the customer lock.
+     *
+     * @param  callable(ComputedResult): bool  $affected
+     */
+    private function forgetResults(Customer $customer, callable $affected): void
+    {
+        ComputedResult::where('store_id', $customer->store_id)
+            ->where('customer_id', $customer->id)
+            ->get()
+            ->filter($affected)
+            ->each->delete();
     }
 
     private function lock(Customer $customer): void

@@ -54,14 +54,15 @@ class AppServiceProvider extends ServiceProvider
         // Sends every new Lead (bot, manual, backfill) to Meta's Conversions API
         Lead::observe(LeadObserver::class);
 
-        // A domain product may only require facts its domain declares, from
-        // any write path (panel, seeders, scripts). Sales products and
-        // products of unregistered domains are not checked.
+        // A domain product may only require facts its domain declares and use
+        // its own domain's capability, from any write path (panel, seeders,
+        // scripts). Sales products and products of unregistered domains are
+        // not checked.
         Product::saving(function (Product $product) {
             $registry = $this->app->make(DomainRegistry::class);
 
             if ($product->domain_key && $registry->has($product->domain_key)) {
-                $registry->assertProductConfiguration($product->domain_key, $product->required_facts ?? []);
+                $registry->assertProductConfiguration($product->domain_key, $product->required_facts ?? [], $product->capability_key);
             }
         });
     }

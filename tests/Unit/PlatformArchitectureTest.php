@@ -55,6 +55,7 @@ arch('the conversation layer does not touch memory or knowledge storage')
         'App\Models\Customer',
         'App\Models\CustomerFact',
         'App\Models\CustomerFactShare',
+        'App\Models\ComputedResult',
         'App\Models\KnowledgeSource',
         'Illuminate\Support\Facades\DB',
     ]);

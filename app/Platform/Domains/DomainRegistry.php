@@ -122,7 +122,13 @@ class DomainRegistry
         }
 
         if ($capabilityKey !== null) {
-            $this->capabilityFor($domainKey, $capabilityKey);
+            // Everything the capability needs must be asked for by the
+            // product, so it is collected before the capability runs.
+            foreach ($this->capabilityFor($domainKey, $capabilityKey)->requires() as $factKey) {
+                if (! in_array($factKey, $requiredFacts, true)) {
+                    throw new InvalidArgumentException("Capability [{$capabilityKey}] requires fact [{$factKey}]; add it to the product's required facts.");
+                }
+            }
         }
     }
 

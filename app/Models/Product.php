@@ -22,6 +22,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'domain_key',
     'aliases',
     'required_facts',
+    'capability_key',
 ])]
 class Product extends Model
 {

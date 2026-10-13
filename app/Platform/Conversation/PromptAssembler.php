@@ -5,6 +5,7 @@ namespace App\Platform\Conversation;
 use App\Models\KnowledgeChunk;
 use App\Models\Product;
 use App\Models\Store;
+use App\Platform\Capabilities\CapabilityResult;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Memory\FactDefinition;
 use App\Platform\Memory\PersonFacts;
@@ -23,8 +24,9 @@ class PromptAssembler
     /**
      * @param  array<string, mixed>  $facts  fact key => value, already filtered for this domain
      * @param  Collection<int, KnowledgeChunk>|null  $fragments
+     * @param  CapabilityResult|null  $computed  output of the product's capability, if any
      */
-    public function build(Store $store, ?DomainModule $domain, ?Product $product, array $facts = [], ?Collection $fragments = null): string
+    public function build(Store $store, ?DomainModule $domain, ?Product $product, array $facts = [], ?Collection $fragments = null, ?CapabilityResult $computed = null): string
     {
         $prompt = trim($store->system_prompt ?? '') ?: 'You are an assistant.';
 
@@ -52,6 +54,13 @@ class PromptAssembler
             foreach ($facts as $key => $value) {
                 $prompt .= "\n- {$this->factLabel($domain, $key)}: ".$this->singleLine($this->neutralize((string) $value));
             }
+        }
+
+        if ($computed && trim($computed->summary) !== '') {
+            $prompt .= "\n\n### RESULTADO CALCULADO\n"
+                .'El sistema calculó este resultado de forma exacta a partir de los datos del cliente. '
+                .'Explícalo tal como está: no lo recalcules, no lo corrijas y no inventes otros valores ni cálculos.'
+                ."\n".$this->neutralize($computed->summary);
         }
 
         if ($fragments && $fragments->isNotEmpty()) {

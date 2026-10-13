@@ -7,6 +7,7 @@ use App\Models\Conversation;
 use App\Models\Product;
 use App\Models\Store;
 use App\Models\WhatsAppMessage;
+use App\Platform\Capabilities\CapabilityRunner;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\CustomerMemory;
@@ -23,7 +24,8 @@ use Illuminate\Support\Facades\Log;
  *
  *   FactCollector (pending answer) → ProductResolver (or clarification)
  *   → FactCollector (missing facts) → CustomerMemory (visible facts)
- *   → KnowledgeRetriever → PromptAssembler → LLM → reply.
+ *   → CapabilityRunner (computed result) → KnowledgeRetriever
+ *   → PromptAssembler → LLM → reply.
  *
  * It never touches the sales flow (leads, Conversions API, catalog images).
  */
@@ -38,6 +40,7 @@ class ConversationPipeline
         private readonly FactCollector $facts,
         private readonly KnowledgeRetriever $knowledge,
         private readonly PromptAssembler $prompts,
+        private readonly CapabilityRunner $capabilities,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -94,11 +97,12 @@ class ConversationPipeline
         }
 
         $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
+        $computed = $product && $domain ? $this->capabilities->run($customer, $product, $domain) : null;
         $fragments = $domain ? $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody) : collect();
 
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
-            $this->prompts->build($store, $domain, $product, $facts, $fragments),
+            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed),
             $this->history($store, $from, $domain?->key()),
         );
 
@@ -108,6 +112,7 @@ class ConversationPipeline
             'domain_key' => $domain?->key(),
             'product_id' => $product?->id,
             'fact_keys' => array_keys($facts),
+            'capability_key' => $computed ? $product->capability_key : null,
             'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
         ]);
 
