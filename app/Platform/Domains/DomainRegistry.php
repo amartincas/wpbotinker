@@ -2,21 +2,31 @@
 
 namespace App\Platform\Domains;
 
+use App\Models\Topic;
 use App\Platform\Contracts\Capability;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Memory\FactDefinition;
+use App\Platform\Memory\FactTypes;
 use App\Platform\Memory\PersonFacts;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
- * The domain modules this installation knows about, from
- * config('botinker.domains'). Modules are resolved through the container,
- * so a module can declare its own constructor dependencies.
+ * The domains a store can use: the PHP modules of config('botinker.domains')
+ * (shared by every store) plus the store's own active topics, configured in
+ * the panel and served as ConfiguredDomain. Without a store, only the
+ * modules are known.
  *
- * Every module is validated against the contract the first time it is
- * resolved: a misconfigured domain fails loudly instead of misbehaving in
- * a conversation.
+ * A module key always wins: a topic can never take a module's key. Modules
+ * are validated against the contract the first time they are resolved and
+ * fail loudly. A stored topic that no longer validates (e.g. the person
+ * catalog changed) is left out and logged, so it cannot break a
+ * conversation.
+ *
+ * Bound as scoped (one instance per request or queued job), and topics are
+ * forgotten whenever one is saved: a long-running worker never serves
+ * stale instructions.
  */
 class DomainRegistry
 {
@@ -25,8 +35,11 @@ class DomainRegistry
     /** @var array<string, DomainModule> */
     private array $resolved = [];
 
-    /** @var array<string, array<string, Capability>> domain key => capability key => capability */
+    /** @var array<string, array<string, Capability>> module key => capability key => capability */
     private array $capabilities = [];
+
+    /** @var array<int, array<string, ConfiguredDomain>> store id => topic key => domain */
+    private array $topics = [];
 
     /**
      * @param  array<string, class-string<DomainModule>>  $modules  domain key => module class
@@ -35,62 +48,62 @@ class DomainRegistry
         private readonly Container $container,
         private readonly array $modules,
         private readonly PersonFacts $personFacts,
+        private readonly FactTypes $factTypes = new FactTypes,
     ) {}
 
-    public function has(string $key): bool
+    public function has(string $key, ?int $storeId = null): bool
+    {
+        return isset($this->modules[$key]) || isset($this->topicsFor($storeId)[$key]);
+    }
+
+    /**
+     * Module keys, then the store's topic keys.
+     *
+     * @return list<string>
+     */
+    public function keys(?int $storeId = null): array
+    {
+        return [...array_keys($this->modules), ...array_keys($this->topicsFor($storeId))];
+    }
+
+    /** Whether $key is a PHP module (as opposed to a configured topic). */
+    public function isModule(string $key): bool
     {
         return isset($this->modules[$key]);
     }
 
-    /**
-     * @return list<string>
-     */
-    public function keys(): array
+    public function get(string $key, ?int $storeId = null): DomainModule
     {
-        return array_keys($this->modules);
+        if (isset($this->modules[$key])) {
+            return $this->module($key);
+        }
+
+        return $this->topicsFor($storeId)[$key]
+            ?? throw new InvalidArgumentException("No domain module registered for key [{$key}].");
     }
 
-    public function get(string $key): DomainModule
-    {
-        if (isset($this->resolved[$key])) {
-            return $this->resolved[$key];
-        }
-
-        if (! $this->has($key)) {
-            throw new InvalidArgumentException("No domain module registered for key [{$key}].");
-        }
-
-        $module = $this->container->make($this->modules[$key]);
-
-        if (! $module instanceof DomainModule) {
-            throw new InvalidArgumentException("Domain [{$key}] must implement ".DomainModule::class.'.');
-        }
-
-        if ($module->key() !== $key) {
-            throw new InvalidArgumentException("Domain registered as [{$key}] reports key [{$module->key()}].");
-        }
-
-        $factKeys = $this->validateFacts($key, $module);
-        $this->capabilities[$key] = $this->validateCapabilities($key, $module, $factKeys);
-
-        return $this->resolved[$key] = $module;
-    }
-
-    /** Validates every configured domain (e.g. from a deploy check or a test). */
+    /** Validates every configured module (e.g. from a deploy check or a test). */
     public function validateAll(): void
     {
-        foreach ($this->keys() as $key) {
-            $this->get($key);
+        foreach (array_keys($this->modules) as $key) {
+            $this->module($key);
         }
+    }
+
+    /** Drops the cached topics; called whenever a topic is saved or deleted. */
+    public function forgetTopics(): void
+    {
+        $this->topics = [];
     }
 
     /**
      * The capability a product of $domainKey may run. A capability of
      * another domain is rejected, even if that domain is registered.
+     * Topics have no capabilities of their own.
      */
-    public function capabilityFor(string $domainKey, string $capabilityKey): Capability
+    public function capabilityFor(string $domainKey, string $capabilityKey, ?int $storeId = null): Capability
     {
-        $this->get($domainKey);
+        $this->get($domainKey, $storeId);
 
         if (isset($this->capabilities[$domainKey][$capabilityKey])) {
             return $this->capabilities[$domainKey][$capabilityKey];
@@ -110,11 +123,11 @@ class DomainRegistry
      *
      * @return list<string>
      */
-    public function capabilityKeys(string $domainKey): array
+    public function capabilityKeys(string $domainKey, ?int $storeId = null): array
     {
-        $this->get($domainKey);
+        $this->get($domainKey, $storeId);
 
-        return array_keys($this->capabilities[$domainKey]);
+        return array_keys($this->capabilities[$domainKey] ?? []);
     }
 
     /**
@@ -124,9 +137,9 @@ class DomainRegistry
      *
      * @param  list<string>  $requiredFacts
      */
-    public function assertProductConfiguration(string $domainKey, array $requiredFacts, ?string $capabilityKey = null, ?string $sampleCapabilityKey = null): void
+    public function assertProductConfiguration(string $domainKey, array $requiredFacts, ?string $capabilityKey = null, ?string $sampleCapabilityKey = null, ?int $storeId = null): void
     {
-        $declared = array_map(fn (FactDefinition $fact) => $fact->key, $this->get($domainKey)->facts());
+        $declared = array_map(fn (FactDefinition $fact) => $fact->key, $this->get($domainKey, $storeId)->facts());
 
         foreach ($requiredFacts as $factKey) {
             if (! in_array($factKey, $declared, true)) {
@@ -137,12 +150,73 @@ class DomainRegistry
         foreach (array_filter([$capabilityKey, $sampleCapabilityKey]) as $key) {
             // Everything a capability needs must be asked for by the
             // product, so it is collected before the capability runs.
-            foreach ($this->capabilityFor($domainKey, $key)->requires() as $factKey) {
+            foreach ($this->capabilityFor($domainKey, $key, $storeId)->requires() as $factKey) {
                 if (! in_array($factKey, $requiredFacts, true)) {
                     throw new InvalidArgumentException("Capability [{$key}] requires fact [{$factKey}]; add it to the product's required facts.");
                 }
             }
         }
+    }
+
+    private function module(string $key): DomainModule
+    {
+        if (isset($this->resolved[$key])) {
+            return $this->resolved[$key];
+        }
+
+        $module = $this->container->make($this->modules[$key]);
+
+        if (! $module instanceof DomainModule) {
+            throw new InvalidArgumentException("Domain [{$key}] must implement ".DomainModule::class.'.');
+        }
+
+        if ($module->key() !== $key) {
+            throw new InvalidArgumentException("Domain registered as [{$key}] reports key [{$module->key()}].");
+        }
+
+        $factKeys = $this->validateFacts($key, $module);
+        $this->capabilities[$key] = $this->validateCapabilities($key, $module, $factKeys);
+
+        return $this->resolved[$key] = $module;
+    }
+
+    /**
+     * The store's active topics as domains, loaded once per store. Topics
+     * whose key a module uses are ignored: the module wins.
+     *
+     * @return array<string, ConfiguredDomain>
+     */
+    private function topicsFor(?int $storeId): array
+    {
+        if ($storeId === null) {
+            return [];
+        }
+
+        if (isset($this->topics[$storeId])) {
+            return $this->topics[$storeId];
+        }
+
+        $domains = [];
+
+        foreach (Topic::where('store_id', $storeId)->where('is_active', true)->orderBy('id')->get() as $topic) {
+            if (isset($this->modules[$topic->key])) {
+                continue;
+            }
+
+            $domain = new ConfiguredDomain($topic->key, $topic->label, $topic->vocabulary ?? [], $topic->instructions, $topic->facts ?? [], $this->factTypes);
+
+            try {
+                $this->validateFacts($topic->key, $domain);
+            } catch (InvalidArgumentException) {
+                Log::warning('TOPIC_INVALID', ['store_id' => $storeId, 'topic_id' => $topic->id]);
+
+                continue;
+            }
+
+            $domains[$topic->key] = $domain;
+        }
+
+        return $this->topics[$storeId] = $domains;
     }
 
     /**

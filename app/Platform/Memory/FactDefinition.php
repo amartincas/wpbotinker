@@ -16,6 +16,7 @@ final class FactDefinition
         public readonly FactScope $scope,
         public readonly ?string $question,
         public readonly ?bool $sensitive,
+        public readonly ?string $label = null,
     ) {}
 
     /** A fact of the Core person catalog (question and sensitivity come from there). */
@@ -24,10 +25,13 @@ final class FactDefinition
         return new self($key, FactScope::Person, null, null);
     }
 
-    /** A fact owned by the declaring domain; validated by DomainModule::validateFact(). */
-    public static function domain(string $key, string $question, bool $sensitive = false): self
+    /**
+     * A fact owned by the declaring domain; validated by
+     * DomainModule::validateFact(). The label names it in the LLM prompt.
+     */
+    public static function domain(string $key, string $question, bool $sensitive = false, ?string $label = null): self
     {
-        return new self($key, FactScope::Domain, $question, $sensitive);
+        return new self($key, FactScope::Domain, $question, $sensitive, $label);
     }
 
     public function isPerson(): bool

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Product;
 use App\Models\Store;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Knowledge\KnowledgeFile;
 use App\Platform\Knowledge\KnowledgeIngestor;
 use FilesystemIterator;
 use Illuminate\Console\Command;
@@ -33,16 +34,6 @@ class IngestKnowledge extends Command
 
     protected $description = 'Ingesta archivos de conocimiento para una tienda y dominio (Markdown, HTML o texto)';
 
-    private const TYPES_BY_EXTENSION = [
-        'md' => 'markdown',
-        'markdown' => 'markdown',
-        'html' => 'html',
-        'htm' => 'html',
-        'txt' => 'text',
-    ];
-
-    private const MAX_FILE_BYTES = 2 * 1024 * 1024;
-
     /** knowledge_sources.origin is a VARCHAR(191). */
     private const MAX_ORIGIN_LENGTH = 191;
 
@@ -58,8 +49,8 @@ class IngestKnowledge extends Command
 
         $domainKey = (string) $this->argument('domain');
 
-        if (! $domains->has($domainKey)) {
-            $this->error("El dominio [{$domainKey}] no está registrado en config/botinker.php.");
+        if (! $domains->has($domainKey, $store->id)) {
+            $this->error("El dominio [{$domainKey}] no está registrado en config/botinker.php ni es un tema activo de la tienda.");
 
             return self::FAILURE;
         }
@@ -78,7 +69,7 @@ class IngestKnowledge extends Command
 
         $type = $this->option('type');
 
-        if ($type !== null && ! in_array($type, self::TYPES_BY_EXTENSION, true)) {
+        if ($type !== null && ! in_array($type, KnowledgeFile::TYPES_BY_EXTENSION, true)) {
             $this->error("Tipo [{$type}] no soportado. Usa markdown, html o text.");
 
             return self::FAILURE;
@@ -206,25 +197,17 @@ class IngestKnowledge extends Command
 
     private function typeOf(SplFileInfo $file): ?string
     {
-        return self::TYPES_BY_EXTENSION[strtolower($file->getExtension())] ?? null;
+        return KnowledgeFile::typeFor($file->getFilename());
     }
 
     private function readFile(SplFileInfo $file, string $relativePath): ?string
     {
-        if ($file->getSize() > self::MAX_FILE_BYTES) {
-            $this->error("{$relativePath}: supera el tamaño máximo de ".(self::MAX_FILE_BYTES / 1024 / 1024).' MB.');
+        try {
+            return KnowledgeFile::read($file->getPathname());
+        } catch (InvalidArgumentException $e) {
+            $this->error("{$relativePath}: {$e->getMessage()}");
 
             return null;
         }
-
-        $content = file_get_contents($file->getPathname());
-
-        if ($content === false || ! mb_check_encoding($content, 'UTF-8')) {
-            $this->error("{$relativePath}: no se pudo leer como texto UTF-8.");
-
-            return null;
-        }
-
-        return $content;
     }
 }

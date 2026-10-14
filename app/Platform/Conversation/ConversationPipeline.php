@@ -84,7 +84,7 @@ class ConversationPipeline
             $product = $resolution->product;
         }
 
-        $domain = $product ? $this->domains->get($product->domain_key) : null;
+        $domain = $product ? $this->domains->get($product->domain_key, $store->id) : null;
 
         $conversation->update(['current_product_id' => $product?->id, 'pending_state' => null]);
 
@@ -156,7 +156,7 @@ class ConversationPipeline
         $showDomain = $options->pluck('domain_key')->unique()->count() > 1;
 
         $lines = $options->values()->map(function (Product $product, int $index) use ($showDomain) {
-            $label = $showDomain ? " ({$this->domains->get($product->domain_key)->label()})" : '';
+            $label = $showDomain ? " ({$this->domains->get($product->domain_key, $product->store_id)->label()})" : '';
 
             return ($index + 1).". {$product->name}{$label}";
         });

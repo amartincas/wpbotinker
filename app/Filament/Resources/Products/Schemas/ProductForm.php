@@ -3,7 +3,10 @@
 namespace App\Filament\Resources\Products\Schemas;
 
 use App\Models\Product;
+use App\Platform\Contracts\DomainModule;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Memory\FactDefinition;
+use App\Platform\Memory\PersonFacts;
 use Closure;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
@@ -33,6 +36,14 @@ class ProductForm
                                 fn ($q) => $q->where('id', Auth::user()?->store_id)
                             )
                     )
+                    // Checked on the server too: the options list alone does
+                    // not stop a crafted request.
+                    ->rule(fn (): Closure => function (string $attribute, mixed $value, Closure $fail) {
+                        if (! Auth::user()?->is_super_admin && (int) $value !== (int) Auth::user()?->store_id) {
+                            $fail('Solo puedes crear productos en tu tienda.');
+                        }
+                    })
+                    ->live()
                     ->required()
                     ->default(Auth::user()?->store_id),
                 TextInput::make('id')
@@ -106,12 +117,55 @@ class ProductForm
                     ->helperText('Copia el ID del anuncio desde Meta Ads Manager (no el texto del mensaje). Así, cuando un cliente escriba desde ese anuncio, el sistema identifica el producto exacto sin depender del texto del mensaje.')
                     ->columnSpanFull(),
 
+                // === DOMAIN OR TOPIC (stores in knowledge mode) ===
+                // A product joins a PHP domain module or one of the store's
+                // topics. Facts and capabilities are chosen from what that
+                // domain declares and checked again on the server.
+                Section::make('Dominio o tema')
+                    ->description('Solo para tiendas en modo conocimiento. Déjalo vacío para un producto del flujo de ventas.')
+                    ->columnSpanFull()
+                    ->schema([
+                        Select::make('domain_key')
+                            ->label('Dominio o tema')
+                            ->options(fn (Get $get) => self::domainOptions($get))
+                            ->rule(fn (Get $get): Closure => function (string $attribute, mixed $value, Closure $fail) use ($get) {
+                                if (filled($value) && ! array_key_exists($value, self::domainOptions($get))) {
+                                    $fail('Elige un dominio o un tema activo de esta tienda.');
+                                }
+                            })
+                            ->live(),
+                        Select::make('required_facts')
+                            ->label('Datos que necesita')
+                            ->helperText('El bot los pide antes de responder, en este orden.')
+                            ->multiple()
+                            ->options(fn (Get $get) => self::factOptions($get))
+                            ->rule(fn (Get $get): Closure => function (string $attribute, mixed $value, Closure $fail) use ($get) {
+                                if ($error = self::configurationError($get, requiredFacts: (array) $value)) {
+                                    $fail($error);
+                                }
+                            })
+                            ->visible(fn (Get $get) => filled($get('domain_key'))),
+                        Select::make('capability_key')
+                            ->label('Capacidad determinista (opcional)')
+                            ->helperText('Solo si el producto necesita un cálculo exacto registrado en el sistema. Un producto basado en instrucciones y conocimiento no la necesita.')
+                            ->options(fn (Get $get) => self::capabilityOptions($get))
+                            ->rule(fn (Get $get): Closure => function (string $attribute, mixed $value, Closure $fail) use ($get) {
+                                if (filled($value) && ($error = self::configurationError($get, capabilityKey: $value))) {
+                                    $fail($error);
+                                }
+                            })
+                            ->visible(fn (Get $get) => filled($get('domain_key'))),
+                        TagsInput::make('aliases')
+                            ->label('Otros nombres')
+                            ->helperText('Formas en que los clientes nombran este producto.')
+                            ->visible(fn (Get $get) => filled($get('domain_key'))),
+                    ]),
+
                 // === SUBSCRIPTION AND FREE SAMPLE (domain products only) ===
                 // The sample's content comes from these instructions (and an
                 // optional registered capability), never from code.
                 Section::make('Suscripción y muestra gratuita')
-                    ->description(fn ($record) => "Dominio: {$record?->domain_key}")
-                    ->visible(fn ($record) => filled($record?->domain_key))
+                    ->visible(fn (Get $get) => filled($get('domain_key')))
                     ->columnSpanFull()
                     ->schema([
                         ToggleButtons::make('access_mode')
@@ -133,26 +187,10 @@ class ProductForm
                         Select::make('sample_capability_key')
                             ->label('Capacidad de la muestra (opcional)')
                             ->helperText('Cálculo registrado del dominio que la muestra puede usar.')
-                            ->options(function ($record) {
-                                $registry = app(DomainRegistry::class);
-
-                                if (! $registry->has((string) $record?->domain_key)) {
-                                    return [];
-                                }
-
-                                $keys = $registry->capabilityKeys($record->domain_key);
-
-                                return array_combine($keys, $keys);
-                            })
-                            ->rule(fn ($record): Closure => function (string $attribute, mixed $value, Closure $fail) use ($record) {
-                                if (blank($value)) {
-                                    return;
-                                }
-
-                                try {
-                                    app(DomainRegistry::class)->assertProductConfiguration((string) $record?->domain_key, $record?->required_facts ?? [], $record?->capability_key, $value);
-                                } catch (InvalidArgumentException $e) {
-                                    $fail($e->getMessage());
+                            ->options(fn (Get $get) => self::capabilityOptions($get))
+                            ->rule(fn (Get $get): Closure => function (string $attribute, mixed $value, Closure $fail) use ($get) {
+                                if (filled($value) && ($error = self::configurationError($get, sampleCapabilityKey: $value))) {
+                                    $fail($error);
                                 }
                             })
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION),
@@ -173,5 +211,94 @@ class ProductForm
                     ->formatStateUsing(fn ($record) => $record?->images()->pluck('image_path')->toArray() ?? [])
                     ->dehydrated(false),
             ]);
+    }
+
+    /**
+     * Domains the selected store can use: PHP modules and its active topics.
+     *
+     * @return array<string, string> key => label
+     */
+    private static function domainOptions(Get $get): array
+    {
+        $registry = app(DomainRegistry::class);
+        $storeId = (int) $get('store_id') ?: null;
+        $options = [];
+
+        foreach ($registry->keys($storeId) as $key) {
+            $options[$key] = $registry->get($key, $storeId)->label().($registry->isModule($key) ? '' : ' (tema)');
+        }
+
+        return $options;
+    }
+
+    /**
+     * Facts the selected domain declares.
+     *
+     * @return array<string, string> key => label
+     */
+    private static function factOptions(Get $get): array
+    {
+        $domain = self::selectedDomain($get);
+
+        if ($domain === null) {
+            return [];
+        }
+
+        return collect($domain->facts())->mapWithKeys(fn (FactDefinition $fact) => [
+            $fact->key => $fact->isPerson() ? app(PersonFacts::class)->label($fact->key) : ($fact->label ?? $fact->key),
+        ])->all();
+    }
+
+    /**
+     * Capabilities registered for the selected domain (none for topics).
+     *
+     * @return array<string, string>
+     */
+    private static function capabilityOptions(Get $get): array
+    {
+        if (self::selectedDomain($get) === null) {
+            return [];
+        }
+
+        $keys = app(DomainRegistry::class)->capabilityKeys((string) $get('domain_key'), (int) $get('store_id') ?: null);
+
+        return array_combine($keys, $keys);
+    }
+
+    private static function selectedDomain(Get $get): ?DomainModule
+    {
+        $registry = app(DomainRegistry::class);
+        $storeId = (int) $get('store_id') ?: null;
+        $key = (string) $get('domain_key');
+
+        return $key !== '' && $registry->has($key, $storeId) ? $registry->get($key, $storeId) : null;
+    }
+
+    /**
+     * Why the form's domain configuration would be rejected on save (the
+     * same check as the model), with one value taken from the field being
+     * validated; null when it is valid or there is no domain to check.
+     */
+    private static function configurationError(Get $get, ?array $requiredFacts = null, ?string $capabilityKey = null, ?string $sampleCapabilityKey = null): ?string
+    {
+        if (self::selectedDomain($get) === null) {
+            return null;
+        }
+
+        $sample = $get('access_mode') === Product::ACCESS_SUBSCRIPTION ? $get('sample_capability_key') : null;
+
+        try {
+            app(DomainRegistry::class)->assertProductConfiguration(
+                (string) $get('domain_key'),
+                $requiredFacts ?? (array) $get('required_facts'),
+                $capabilityKey ?? ($get('capability_key') ?: null),
+                $sampleCapabilityKey ?? ($sample ?: null),
+                (int) $get('store_id') ?: null,
+            );
+        } catch (InvalidArgumentException $e) {
+            return $e->getMessage();
+        }
+
+        return null;
     }
 }

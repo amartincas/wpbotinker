@@ -54,7 +54,7 @@ class ProductResolver
             return ProductResolution::clarify($mentioned);
         }
 
-        $signalled = $this->signalledDomains($catalog, $text);
+        $signalled = $this->signalledDomains($store, $catalog, $text);
 
         if ($conversation->current_product_id && ($active = $catalog->firstWhere('id', $conversation->current_product_id))) {
             return $this->fromActiveProduct($active, $catalog, $signalled);
@@ -80,15 +80,16 @@ class ProductResolver
     }
 
     /**
-     * Products of this store that belong to a registered domain. Products
-     * whose domain_key is not registered are ignored, never guessed.
+     * Products of this store that belong to a registered module or to one
+     * of the store's active topics. Any other domain_key is ignored, never
+     * guessed.
      *
      * @return Collection<int, Product>
      */
     private function catalog(Store $store): Collection
     {
         return Product::where('store_id', $store->id)
-            ->whereIn('domain_key', $this->domains->keys())
+            ->whereIn('domain_key', $this->domains->keys($store->id))
             ->orderBy('id')
             ->get();
     }
@@ -168,10 +169,10 @@ class ProductResolver
      *
      * @return Collection<int, string>
      */
-    private function signalledDomains(Collection $catalog, string $text): Collection
+    private function signalledDomains(Store $store, Collection $catalog, string $text): Collection
     {
         return $catalog->pluck('domain_key')->unique()
-            ->filter(fn (string $key) => collect($this->domains->get($key)->vocabulary())
+            ->filter(fn (string $key) => collect($this->domains->get($key, $store->id)->vocabulary())
                 ->contains(fn ($term) => $this->containsWords($text, $this->normalize($term))))
             ->values();
     }

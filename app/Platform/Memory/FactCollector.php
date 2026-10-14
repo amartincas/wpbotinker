@@ -49,8 +49,8 @@ class FactCollector
 
         $domainKey = (string) ($pending['domain_key'] ?? '');
         $productId = (int) ($pending['product_id'] ?? 0);
-        $fact = $this->domains->has($domainKey)
-            ? collect($this->domains->get($domainKey)->facts())->firstWhere('key', $pending['fact_key'] ?? null)
+        $fact = $this->domains->has($domainKey, $conversation->store_id)
+            ? collect($this->domains->get($domainKey, $conversation->store_id)->facts())->firstWhere('key', $pending['fact_key'] ?? null)
             : null;
 
         if ($fact === null || $productId === 0) {
@@ -59,7 +59,7 @@ class FactCollector
             return PendingFactAnswer::none();
         }
 
-        $domain = $this->domains->get($domainKey);
+        $domain = $this->domains->get($domainKey, $conversation->store_id);
 
         return $type === self::PENDING_FACT
             ? $this->answerFactRequest($conversation, $customer, $domain, $fact, $productId, $message, $sourceWamid)
@@ -73,7 +73,7 @@ class FactCollector
     public function require(Conversation $conversation, Customer $customer, Product $product, DomainModule $domain, ?string $rejectionReason = null): ?string
     {
         $required = $product->required_facts ?? [];
-        $this->domains->assertProductConfiguration($domain->key(), $required);
+        $this->domains->assertProductConfiguration($domain->key(), $required, storeId: $product->store_id);
 
         $definitions = collect($domain->facts())->keyBy('key');
         $visible = $this->memory->visibleFacts($customer, $domain);

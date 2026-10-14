@@ -132,7 +132,10 @@ describe('product and domain resolution', function () {
 
         runDomainJob($emptyStore, 'Hola');
 
-        expect(domainPrompt())->toBe('Persona de la tienda vacía.')
+        // Persona, then only the Core rules: no domain or product section.
+        expect(domainPrompt())->toStartWith("Persona de la tienda vacía.\n\n### REGLAS DEL SISTEMA\n")
+            ->not->toContain('### DOMINIO')
+            ->not->toContain('### PRODUCTO')
             ->and(lastSentText())->toBe('Hola, ¿en qué te ayudo?');
     });
 

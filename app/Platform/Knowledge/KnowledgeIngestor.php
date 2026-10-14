@@ -36,7 +36,7 @@ class KnowledgeIngestor
         ?string $license = null,
         string $language = 'es',
     ): KnowledgeSource {
-        $this->domains->get($domainKey); // must be a registered, valid domain
+        $this->domains->get($domainKey, $store->id); // a registered module or an active topic of the store
 
         if (! in_array($sourceType, KnowledgeSource::TYPES, true)) {
             throw new InvalidArgumentException("Unsupported knowledge source type [{$sourceType}].");

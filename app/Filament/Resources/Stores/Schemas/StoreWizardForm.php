@@ -101,6 +101,17 @@ class StoreWizardForm
                     ->helperText('WhatsApp number (with country code, no "+") that receives a message whenever a new lead is created for this store. Leave empty to disable the alert.')
                     ->columnSpanFull(),
 
+                Select::make('conversation_mode')
+                    ->label('Modo de conversación')
+                    ->options([
+                        'sales' => 'Ventas (flujo comercial actual)',
+                        'knowledge' => 'Conocimiento (dominios y temas)',
+                    ])
+                    ->default('sales')
+                    ->helperText('En modo conocimiento el bot responde con los temas, productos y fuentes configurados.')
+                    ->required()
+                    ->columnSpanFull(),
+
                 Textarea::make('payment_instructions')
                     ->label('Instrucciones de pago')
                     ->placeholder("Ej.:\nNequi: 300 000 0000\nDaviplata: 300 000 0000\nLlave: @mitienda")

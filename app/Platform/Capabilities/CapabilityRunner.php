@@ -52,8 +52,8 @@ class CapabilityRunner
             throw new InvalidArgumentException("Product [{$product->id}] does not belong to domain [{$domain->key()}] of the customer's store.");
         }
 
-        $this->domains->assertProductConfiguration($domain->key(), $product->required_facts ?? [], $product->capability_key);
-        $capability = $this->domains->capabilityFor($domain->key(), $product->capability_key);
+        $this->domains->assertProductConfiguration($domain->key(), $product->required_facts ?? [], $product->capability_key, storeId: $customer->store_id);
+        $capability = $this->domains->capabilityFor($domain->key(), $product->capability_key, $customer->store_id);
 
         // If the inputs change while computing (correction, revocation), the
         // result is discarded and computed again from the current inputs: a
