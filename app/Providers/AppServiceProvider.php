@@ -55,14 +55,14 @@ class AppServiceProvider extends ServiceProvider
         Lead::observe(LeadObserver::class);
 
         // A domain product may only require facts its domain declares and use
-        // its own domain's capability, from any write path (panel, seeders,
-        // scripts). Sales products and products of unregistered domains are
-        // not checked.
+        // its own domain's capabilities (main and sample), from any write
+        // path (panel, seeders, scripts). Sales products and products of
+        // unregistered domains are not checked.
         Product::saving(function (Product $product) {
             $registry = $this->app->make(DomainRegistry::class);
 
             if ($product->domain_key && $registry->has($product->domain_key)) {
-                $registry->assertProductConfiguration($product->domain_key, $product->required_facts ?? [], $product->capability_key);
+                $registry->assertProductConfiguration($product->domain_key, $product->required_facts ?? [], $product->capability_key, $product->sample_capability_key);
             }
         });
     }

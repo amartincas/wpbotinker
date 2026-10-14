@@ -28,4 +28,19 @@ class Customer extends Model
     {
         return $this->hasMany(CustomerFactShare::class);
     }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class);
+    }
+
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    public function sampleDeliveries(): HasMany
+    {
+        return $this->hasMany(SampleDelivery::class);
+    }
 }

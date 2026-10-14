@@ -2,6 +2,9 @@
 
 namespace App\Filament\Resources\Products\Schemas;
 
+use App\Models\Product;
+use App\Platform\Domains\DomainRegistry;
+use Closure;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
@@ -9,8 +12,10 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Schemas\Schema;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Illuminate\Support\Facades\Auth;
+use InvalidArgumentException;
 
 class ProductForm
 {
@@ -100,6 +105,58 @@ class ProductForm
                     ->placeholder('Pega el ID del anuncio y presiona Enter')
                     ->helperText('Copia el ID del anuncio desde Meta Ads Manager (no el texto del mensaje). Así, cuando un cliente escriba desde ese anuncio, el sistema identifica el producto exacto sin depender del texto del mensaje.')
                     ->columnSpanFull(),
+
+                // === SUBSCRIPTION AND FREE SAMPLE (domain products only) ===
+                // The sample's content comes from these instructions (and an
+                // optional registered capability), never from code.
+                Section::make('Suscripción y muestra gratuita')
+                    ->description(fn ($record) => "Dominio: {$record?->domain_key}")
+                    ->visible(fn ($record) => filled($record?->domain_key))
+                    ->columnSpanFull()
+                    ->schema([
+                        ToggleButtons::make('access_mode')
+                            ->label('Acceso')
+                            ->options([
+                                Product::ACCESS_OPEN => 'Libre',
+                                Product::ACCESS_SUBSCRIPTION => 'Con suscripción',
+                            ])
+                            ->default(Product::ACCESS_OPEN)
+                            ->inline()
+                            ->live()
+                            ->required(),
+                        Textarea::make('sample_instructions')
+                            ->label('Instrucciones de la muestra gratuita')
+                            ->helperText('Qué ofrece la muestra y cómo responder. Se entrega una sola vez por cliente, antes de la oferta de suscripción. Sin instrucciones, el producto no ofrece muestra.')
+                            ->requiredWith('sample_capability_key')
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        Select::make('sample_capability_key')
+                            ->label('Capacidad de la muestra (opcional)')
+                            ->helperText('Cálculo registrado del dominio que la muestra puede usar.')
+                            ->options(function ($record) {
+                                $registry = app(DomainRegistry::class);
+
+                                if (! $registry->has((string) $record?->domain_key)) {
+                                    return [];
+                                }
+
+                                $keys = $registry->capabilityKeys($record->domain_key);
+
+                                return array_combine($keys, $keys);
+                            })
+                            ->rule(fn ($record): Closure => function (string $attribute, mixed $value, Closure $fail) use ($record) {
+                                if (blank($value)) {
+                                    return;
+                                }
+
+                                try {
+                                    app(DomainRegistry::class)->assertProductConfiguration((string) $record?->domain_key, $record?->required_facts ?? [], $record?->capability_key, $value);
+                                } catch (InvalidArgumentException $e) {
+                                    $fail($e->getMessage());
+                                }
+                            })
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION),
+                    ]),
 
                 // === PRODUCT GALLERY ===
                 FileUpload::make('images')

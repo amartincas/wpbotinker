@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'meta_capi_currency',
     'alert_phone',
     'conversation_mode',
+    'payment_instructions',
 ])]
 class Store extends Model
 {
@@ -69,5 +70,10 @@ class Store extends Model
     public function conversations(): HasMany
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    public function plans(): HasMany
+    {
+        return $this->hasMany(Plan::class);
     }
 }

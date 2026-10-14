@@ -38,6 +38,17 @@ return [
             'report' => false,
         ],
 
+        // Payment receipts: private, never served by URL. Files stay here
+        // only while their payment is under review (App\Models\PaymentReceipt).
+        'receipts' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/receipts'),
+            'visibility' => 'private',
+            'serve' => false,
+            'throw' => false,
+            'report' => false,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),

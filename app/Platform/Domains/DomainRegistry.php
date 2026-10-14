@@ -106,12 +106,25 @@ class DomainRegistry
     }
 
     /**
+     * Keys of the capabilities a product of $domainKey may use.
+     *
+     * @return list<string>
+     */
+    public function capabilityKeys(string $domainKey): array
+    {
+        $this->get($domainKey);
+
+        return array_keys($this->capabilities[$domainKey]);
+    }
+
+    /**
      * Checks what a product declares against its domain: the domain exists,
-     * every required fact is declared by it, and the capability is its own.
+     * every required fact is declared by it, and its capabilities (main and
+     * free sample) are its own.
      *
      * @param  list<string>  $requiredFacts
      */
-    public function assertProductConfiguration(string $domainKey, array $requiredFacts, ?string $capabilityKey = null): void
+    public function assertProductConfiguration(string $domainKey, array $requiredFacts, ?string $capabilityKey = null, ?string $sampleCapabilityKey = null): void
     {
         $declared = array_map(fn (FactDefinition $fact) => $fact->key, $this->get($domainKey)->facts());
 
@@ -121,12 +134,12 @@ class DomainRegistry
             }
         }
 
-        if ($capabilityKey !== null) {
-            // Everything the capability needs must be asked for by the
+        foreach (array_filter([$capabilityKey, $sampleCapabilityKey]) as $key) {
+            // Everything a capability needs must be asked for by the
             // product, so it is collected before the capability runs.
-            foreach ($this->capabilityFor($domainKey, $capabilityKey)->requires() as $factKey) {
+            foreach ($this->capabilityFor($domainKey, $key)->requires() as $factKey) {
                 if (! in_array($factKey, $requiredFacts, true)) {
-                    throw new InvalidArgumentException("Capability [{$capabilityKey}] requires fact [{$factKey}]; add it to the product's required facts.");
+                    throw new InvalidArgumentException("Capability [{$key}] requires fact [{$factKey}]; add it to the product's required facts.");
                 }
             }
         }

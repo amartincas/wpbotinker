@@ -101,6 +101,14 @@ class StoreWizardForm
                     ->helperText('WhatsApp number (with country code, no "+") that receives a message whenever a new lead is created for this store. Leave empty to disable the alert.')
                     ->columnSpanFull(),
 
+                Textarea::make('payment_instructions')
+                    ->label('Instrucciones de pago')
+                    ->placeholder("Ej.:\nNequi: 300 000 0000\nDaviplata: 300 000 0000\nLlave: @mitienda")
+                    ->helperText('Se envían tal cual al cliente que inicia un pago de una suscripción. Incluye cada método aceptado (Nequi, Daviplata, Llave...).')
+                    ->rows(5)
+                    ->maxLength(2000)
+                    ->columnSpanFull(),
+
                 // === AI PERSONA ===
                 Select::make('personality_type')
                     ->label('Persona Type')

@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use InvalidArgumentException;
 
 #[Fillable([
     'store_id',
@@ -23,10 +24,23 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'aliases',
     'required_facts',
     'capability_key',
+    'access_mode',
+    'sample_instructions',
+    'sample_capability_key',
 ])]
 class Product extends Model
 {
     use HasFactory;
+
+    /** No access control: anyone may use it. */
+    public const ACCESS_OPEN = 'open';
+
+    /** The paid service needs an active subscription of the customer. */
+    public const ACCESS_SUBSCRIPTION = 'subscription';
+
+    protected $attributes = [
+        'access_mode' => self::ACCESS_OPEN,
+    ];
 
     /**
      * Stock interpretation depends on product type:
@@ -44,6 +58,39 @@ class Product extends Model
             'aliases' => 'array',
             'required_facts' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        // Commercial configuration that needs no domain module. Domain
+        // checks (facts, capabilities) run in AppServiceProvider.
+        static::saving(function (self $product) {
+            if (! in_array($product->access_mode, [self::ACCESS_OPEN, self::ACCESS_SUBSCRIPTION], true)) {
+                throw new InvalidArgumentException("Unknown access mode [{$product->access_mode}].");
+            }
+
+            if ($product->requiresSubscription() && blank($product->domain_key)) {
+                throw new InvalidArgumentException('Only a domain product can require a subscription.');
+            }
+
+            // A sample configured on an open product is kept but unused:
+            // offersSample() requires a subscription. What the sample offers is defined by its instructions; a
+            // capability alone would leave its content undefined.
+            if (filled($product->sample_capability_key) && blank($product->sample_instructions)) {
+                throw new InvalidArgumentException('A sample capability needs sample instructions.');
+            }
+        });
+    }
+
+    public function requiresSubscription(): bool
+    {
+        return $this->access_mode === self::ACCESS_SUBSCRIPTION;
+    }
+
+    /** The sample exists when its instructions are configured. */
+    public function offersSample(): bool
+    {
+        return $this->requiresSubscription() && filled($this->sample_instructions);
     }
 
     /**
@@ -81,6 +128,11 @@ class Product extends Model
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);
+    }
+
+    public function plans(): HasMany
+    {
+        return $this->hasMany(Plan::class);
     }
 
     /**
