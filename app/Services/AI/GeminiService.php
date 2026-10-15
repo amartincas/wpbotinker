@@ -3,10 +3,11 @@
 namespace App\Services\AI;
 
 use App\Contracts\AiServiceInterface;
+use App\Contracts\ImageReader;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class GeminiService implements AiServiceInterface
+class GeminiService implements AiServiceInterface, ImageReader
 {
     private string $apiKey;
     private string $model;
@@ -15,6 +16,35 @@ class GeminiService implements AiServiceInterface
     {
         $this->apiKey = $apiKey;
         $this->model = $model;
+    }
+
+    /**
+     * Reads an image with the store's own model and key, as inline data of
+     * the same generateContent endpoint (adapted from WpBotTrainer).
+     */
+    public function analyzeImage(string $base64Image, string $mimeType, string $prompt): string
+    {
+        $response = Http::withHeaders([
+            'x-goog-api-key' => $this->apiKey,
+            'Content-Type' => 'application/json',
+        ])
+            ->timeout(30)
+            ->post("https://generativelanguage.googleapis.com/v1beta/models/{$this->model}:generateContent", [
+                'contents' => [[
+                    'role' => 'user',
+                    'parts' => [
+                        ['text' => $prompt],
+                        ['inline_data' => ['mime_type' => $mimeType, 'data' => $base64Image]],
+                    ],
+                ]],
+                'generationConfig' => ['maxOutputTokens' => 500],
+            ]);
+
+        if ($response->failed()) {
+            throw new \Exception('Gemini vision error (HTTP '.$response->status().')');
+        }
+
+        return (string) ($response->json('candidates.0.content.parts.0.text') ?? '');
     }
 
     /**

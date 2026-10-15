@@ -19,7 +19,14 @@ class WhatsAppTemplate extends Model
         'type',
         'is_reengagement',
         'is_lead_alert',
+        'event_key',
     ];
+
+    /** Template sent to the store admin about a receipt to review. Parameters: store_name, payment_ref, product_name, amount, customer_phone. */
+    public const EVENT_PAYMENT_ALERT = 'payment_alert';
+
+    /** Template sent to the customer with the review result. Parameters: product_name, result, expires_at. */
+    public const EVENT_PAYMENT_RESULT = 'payment_result';
 
     protected $casts = [
         'parameters_map'  => 'array',

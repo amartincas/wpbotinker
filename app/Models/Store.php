@@ -72,6 +72,17 @@ class Store extends Model
         return $this->hasMany(Conversation::class);
     }
 
+    /**
+     * The store admin's WhatsApp number (alert_phone, digits only): the
+     * only sender whose replies can decide this store's payments.
+     */
+    public function adminWhatsApp(): ?string
+    {
+        $digits = preg_replace('/\D/', '', (string) $this->alert_phone);
+
+        return $digits === '' ? null : $digits;
+    }
+
     public function plans(): HasMany
     {
         return $this->hasMany(Plan::class);

@@ -11,6 +11,8 @@ use App\Factories\AIServiceFactory;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
 use App\Services\Inventory\ProductFinderService;
+use App\Platform\Commerce\AdminPaymentDecisions;
+use App\Platform\Commerce\ReceiptIntake;
 use App\Platform\Conversation\ConversationPipeline;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -125,7 +127,8 @@ class ProcessWhatsAppMessage implements ShouldQueue
                     'store_id' => $this->store->id,
                     'customer_phone' => $this->from,
                     'role' => 'user',
-                    'content' => $this->messageBody,
+                    // An image (receipt) has no text of its own.
+                    'content' => $this->messageBody ?? ($this->messageType === 'image' ? '[imagen]' : null),
                 ]);
 
                 return;
@@ -228,6 +231,22 @@ class ProcessWhatsAppMessage implements ShouldQueue
             // Stores in 'knowledge' mode use the domain conversation pipeline.
             // Everything below this branch is the sales flow, unchanged.
             if ($this->store->usesKnowledgeMode()) {
+                // A payment receipt (C4).
+                if ($this->messageType === 'image' && $this->mediaId) {
+                    app(ReceiptIntake::class)->handle($this->store, $this->from, $this->mediaId, $this->messageBody, (string) $this->phoneId);
+
+                    return;
+                }
+
+                // The store admin deciding a payment review (C5).
+                $decisions = app(AdminPaymentDecisions::class);
+
+                if ($decisions->handles($this->store, $this->from, (string) $this->messageBody)) {
+                    $decisions->handle($this->store, $this->from, (string) $this->messageBody);
+
+                    return;
+                }
+
                 app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId);
 
                 return;

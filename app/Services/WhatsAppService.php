@@ -315,6 +315,13 @@ class WhatsAppService
                     $extension = 'm4a';
                 } elseif (str_contains($contentType, 'ogg')) {
                     $extension = 'ogg';
+                } elseif (str_contains($contentType, 'jpeg') || str_contains($contentType, 'jpg')) {
+                    // Payment receipts arrive as images (same fix as WpBotTrainer).
+                    $extension = 'jpg';
+                } elseif (str_contains($contentType, 'png')) {
+                    $extension = 'png';
+                } elseif (str_contains($contentType, 'webp')) {
+                    $extension = 'webp';
                 }
             }
 
@@ -407,10 +414,11 @@ class WhatsAppService
         string $toNumber,
         string $imagePath,
         Store $store,
-        ?string $caption = null
+        ?string $caption = null,
+        string $disk = 'public'
     ): ?string {
         try {
-            $mediaId = self::uploadMedia($imagePath, $store);
+            $mediaId = self::uploadMedia($imagePath, $store, $disk);
 
             if (!$mediaId) {
                 return null;
@@ -473,9 +481,9 @@ class WhatsAppService
      * endpoint, returning its media id for use in a subsequent message
      * send. See sendWhatsAppImage() for why this replaced the 'link' method.
      */
-    private static function uploadMedia(string $imagePath, Store $store): ?string
+    private static function uploadMedia(string $imagePath, Store $store, string $disk = 'public'): ?string
     {
-        if (!Storage::disk('public')->exists($imagePath)) {
+        if (!Storage::disk($disk)->exists($imagePath)) {
             Log::warning('WhatsApp media upload: local file not found', [
                 'store_id' => $store->id,
                 'image_path' => $imagePath,
@@ -484,8 +492,8 @@ class WhatsAppService
         }
 
         $url = "https://graph.facebook.com/v20.0/{$store->wa_phone_number_id}/media";
-        $fullPath = Storage::disk('public')->path($imagePath);
-        $mimeType = Storage::disk('public')->mimeType($imagePath) ?: 'image/jpeg';
+        $fullPath = Storage::disk($disk)->path($imagePath);
+        $mimeType = Storage::disk($disk)->mimeType($imagePath) ?: 'image/jpeg';
 
         $response = Http::withToken($store->wa_access_token)
             ->attach('file', fopen($fullPath, 'rb'), basename($fullPath), ['Content-Type' => $mimeType])

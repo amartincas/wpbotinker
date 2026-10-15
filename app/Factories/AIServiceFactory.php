@@ -3,6 +3,7 @@
 namespace App\Factories;
 
 use App\Contracts\AiServiceInterface;
+use App\Contracts\ImageReader;
 use App\Models\Store;
 use App\Services\AI\GeminiService;
 use App\Services\AI\GrokService;
@@ -52,6 +53,20 @@ class AIServiceFactory
             'gemini' => new GeminiService($apiKey, $model),
             default => throw new \Exception("Unsupported AI provider: {$provider}"),
         };
+    }
+
+    /**
+     * Image reading (receipts) for the store, on its own provider, key and
+     * enabled model; null when that provider cannot read images here
+     * (Grok), so the image goes nowhere else.
+     *
+     * @throws InvalidArgumentException when the store's model is not enabled
+     */
+    public static function makeImageReader(Store $store): ?ImageReader
+    {
+        $service = self::make($store);
+
+        return $service instanceof ImageReader ? $service : null;
     }
 
     /**

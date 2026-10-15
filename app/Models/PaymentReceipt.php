@@ -32,6 +32,7 @@ class PaymentReceipt extends Model
             'file_size' => 'integer',
             'extracted_data' => 'encrypted:array',
             'file_deleted_at' => 'datetime',
+            'alerted_at' => 'datetime',
         ];
     }
 

@@ -214,6 +214,10 @@ class WhatsAppController extends Controller
             'message_id' => $phoneId,
             'media_id' => $mediaId,
         ]);
+    } elseif ($type === 'image' && $store->usesKnowledgeMode()) {
+        // Payment receipts (C4). The sales flow keeps ignoring images.
+        $mediaId = $message['image']['id'] ?? null;
+        $body = $message['image']['caption'] ?? null;
     }
 
     if (!$fromPhone || (!$body && !$mediaId)) {

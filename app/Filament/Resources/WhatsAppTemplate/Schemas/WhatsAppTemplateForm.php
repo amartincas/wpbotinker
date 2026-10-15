@@ -95,6 +95,15 @@ class WhatsAppTemplateForm
                 ->inline(false)
                 ->columnSpanFull(),
 
+            Select::make('event_key')
+                ->label('Uso en pagos (opcional)')
+                ->options([
+                    \App\Models\WhatsAppTemplate::EVENT_PAYMENT_ALERT => 'Alerta de comprobante al administrador (store_name, payment_ref, product_name, amount, customer_phone)',
+                    \App\Models\WhatsAppTemplate::EVENT_PAYMENT_RESULT => 'Resultado del pago al cliente (product_name, result, expires_at)',
+                ])
+                ->helperText('Se usa solo cuando la ventana de 24 h de WhatsApp está cerrada. Usa estos nombres en el mapa de parámetros.')
+                ->columnSpanFull(),
+
             Toggle::make('is_lead_alert')
                 ->label('Plantilla de Alerta de Nuevo Lead')
                 ->helperText('Activalo si esta es la plantilla que se envia al "Admin Alert Phone" de la tienda cada vez que se crea un lead nuevo. Solo una por tienda. Usa como parametros: store_name, customer_name, customer_phone, product_service_name, sale_value.')

@@ -32,30 +32,45 @@ class PaymentReview
     /** Confirms the payment and returns the subscription it created or extended. */
     public function confirm(Payment $payment, ?User $reviewer = null, ?string $note = null): Subscription
     {
-        [$subscription, $changed] = $this->locked($payment, function (Payment $locked) use ($reviewer, $note) {
-            if ($locked->status === Payment::STATUS_CONFIRMED) {
-                return [$this->subscriptionOf($locked), false];
+        return $this->decide($payment, true, $reviewer, $note)->subscription;
+    }
+
+    /**
+     * Confirms ($approve) or rejects the payment. The outcome says whether
+     * THIS call changed it: a repeated or concurrent decision gets
+     * changed=false, so whoever reacts to it (e.g. telling the customer)
+     * does so exactly once.
+     */
+    public function decide(Payment $payment, bool $approve, ?User $reviewer = null, ?string $note = null): ReviewOutcome
+    {
+        $outcome = $this->locked($payment, function (Payment $locked) use ($approve, $reviewer, $note) {
+            $target = $approve ? Payment::STATUS_CONFIRMED : Payment::STATUS_REJECTED;
+
+            if ($locked->status === $target) {
+                return new ReviewOutcome(false, $locked, $approve ? $this->subscriptionOf($locked) : null);
             }
 
-            $this->assertReviewable($locked, 'confirm');
+            $this->assertReviewable($locked, $approve ? 'confirm' : 'reject');
 
             $locked->update([
-                'status' => Payment::STATUS_CONFIRMED,
+                'status' => $target,
                 'reviewed_by' => $reviewer?->id,
                 'reviewed_at' => now(),
                 'review_note' => $note,
             ]);
 
-            return [$this->grant($locked), true];
+            return new ReviewOutcome(true, $locked, $approve ? $this->grant($locked) : null);
         });
 
-        Log::info($changed ? 'PAYMENT_CONFIRMED' : 'PAYMENT_CONFIRM_NOOP', [
-            'store_id' => $payment->store_id, 'payment_id' => $payment->id, 'subscription_id' => $subscription->id,
-        ]);
+        Log::info(match (true) {
+            ! $outcome->changed => 'PAYMENT_REVIEW_NOOP',
+            $approve => 'PAYMENT_CONFIRMED',
+            default => 'PAYMENT_REJECTED',
+        }, ['store_id' => $payment->store_id, 'payment_id' => $payment->id, 'subscription_id' => $outcome->subscription?->id]);
 
         $this->purgeReceipts($payment);
 
-        return $subscription;
+        return $outcome;
     }
 
     /** The money is not visible yet: the payment stays open, grants nothing and keeps its receipts. */
@@ -81,23 +96,7 @@ class PaymentReview
     /** Final rejection: grants nothing and drops its receipt files. */
     public function reject(Payment $payment, ?User $reviewer = null, ?string $reason = null): Payment
     {
-        $rejected = $this->locked($payment, function (Payment $locked) use ($reviewer, $reason) {
-            if ($locked->status === Payment::STATUS_REJECTED) {
-                return $locked;
-            }
-
-            $this->assertReviewable($locked, 'reject');
-
-            $locked->update(['status' => Payment::STATUS_REJECTED, 'reviewed_by' => $reviewer?->id, 'reviewed_at' => now(), 'review_note' => $reason]);
-
-            Log::info('PAYMENT_REJECTED', ['store_id' => $locked->store_id, 'payment_id' => $locked->id]);
-
-            return $locked;
-        });
-
-        $this->purgeReceipts($rejected);
-
-        return $rejected;
+        return $this->decide($payment, false, $reviewer, $reason)->payment;
     }
 
     /**

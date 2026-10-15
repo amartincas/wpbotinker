@@ -3,9 +3,10 @@
 namespace App\Services\AI;
 
 use App\Contracts\AiServiceInterface;
+use App\Contracts\ImageReader;
 use Illuminate\Support\Facades\Http;
 
-class OpenAIService implements AIServiceInterface
+class OpenAIService implements AIServiceInterface, ImageReader
 {
     private string $apiKey;
     private string $model;
@@ -14,6 +15,33 @@ class OpenAIService implements AIServiceInterface
     {
         $this->apiKey = $apiKey;
         $this->model = $model;
+    }
+
+    /**
+     * Reads an image with the store's own model and key (adapted from
+     * WpBotTrainer, which used a fixed vision model).
+     */
+    public function analyzeImage(string $base64Image, string $mimeType, string $prompt): string
+    {
+        $response = Http::withToken($this->apiKey)
+            ->timeout(30)
+            ->post('https://api.openai.com/v1/chat/completions', [
+                'model' => $this->model,
+                'messages' => [[
+                    'role' => 'user',
+                    'content' => [
+                        ['type' => 'text', 'text' => $prompt],
+                        ['type' => 'image_url', 'image_url' => ['url' => "data:{$mimeType};base64,{$base64Image}"]],
+                    ],
+                ]],
+                'max_tokens' => 500,
+            ]);
+
+        if ($response->failed()) {
+            throw new \Exception('OpenAI vision error (HTTP '.$response->status().')');
+        }
+
+        return (string) ($response->json('choices.0.message.content') ?? '');
     }
 
     /**
