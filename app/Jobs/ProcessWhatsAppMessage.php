@@ -8,7 +8,6 @@ use App\Models\Product;
 use App\Models\Conversation;
 use App\Models\Lead;
 use App\Factories\AIServiceFactory;
-use App\Services\AI\OpenAIService;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
 use App\Services\Inventory\ProductFinderService;
@@ -159,6 +158,26 @@ class ProcessWhatsAppMessage implements ShouldQueue
                     return;
                 }
 
+                // Transcription runs on the store's own provider only: a
+                // store whose provider cannot transcribe never sends its key
+                // (or the audio) to another provider.
+                $transcriber = AIServiceFactory::makeTranscriber($this->store);
+
+                if ($transcriber === null) {
+                    Log::warning('AUDIO_TRANSCRIPTION_UNSUPPORTED', [
+                        'store_id' => $this->store->id,
+                        'ai_provider' => $this->store->ai_provider,
+                    ]);
+
+                    WhatsAppService::sendMessage(
+                        $this->from,
+                        'Por ahora no puedo escuchar audios. Por favor escríbeme tu pregunta.',
+                        $this->store
+                    );
+
+                    return;
+                }
+
                 $localPath = WhatsAppService::downloadMedia($this->mediaId, $this->store);
                 if (!$localPath) {
                     Log::error('Failed to download audio media for transcription', [
@@ -170,8 +189,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 }
 
                 try {
-                    $openAi = new OpenAIService($this->store->ai_api_key, 'whisper-1');
-                    $transcribedText = $openAi->transcribeAudio(Storage::disk('local')->path($localPath));
+                    $transcribedText = $transcriber->transcribeAudio(Storage::disk('local')->path($localPath));
                     $this->messageBody = "🎤 [AUDIO]: " . trim($transcribedText);
 
                     if (empty($this->messageBody)) {

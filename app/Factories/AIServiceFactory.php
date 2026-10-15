@@ -7,27 +7,20 @@ use App\Models\Store;
 use App\Services\AI\GeminiService;
 use App\Services\AI\GrokService;
 use App\Services\AI\OpenAIService;
-use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 
 class AIServiceFactory
 {
     /**
-     * Supported models for each AI provider.
+     * Models enabled for a provider: config('ai.models'), the same list the
+     * panel offers. The single source of truth for both.
+     *
+     * @return list<string>
      */
-    private const SUPPORTED_MODELS = [
-        'openai' => ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'],
-        'grok' => ['grok-beta', 'grok-2', 'grok-3'],
-        'gemini' => ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview'],
-    ];
-
-    /**
-     * Default models for each AI provider.
-     */
-    private const DEFAULT_MODELS = [
-        'openai' => 'gpt-4o-mini',
-        'grok' => 'grok-beta',
-        'gemini' => 'gemini-2.5-flash',
-    ];
+    public static function enabledModels(?string $provider): array
+    {
+        return array_values(config("ai.models.{$provider}", []));
+    }
 
     /**
      * Create an AI service instance based on the store's configuration.
@@ -47,8 +40,11 @@ class AIServiceFactory
             throw new \Exception("Missing API Key for store: {$store->name}");
         }
 
-        // Validate and get the model, with fallback to default if invalid
-        $model = self::validateAndGetModel($provider, $model, $store);
+        // A model the configuration does not enable is an error, never
+        // silently replaced by another one.
+        if (! in_array($model, self::enabledModels($provider), true)) {
+            throw new InvalidArgumentException("AI model [{$model}] is not enabled for provider [{$provider}] (store #{$store->id}). Choose one of config('ai.models.{$provider}').");
+        }
 
         return match ($provider) {
             'openai' => new OpenAIService($apiKey, $model),
@@ -59,38 +55,17 @@ class AIServiceFactory
     }
 
     /**
-     * Validate the model and return it, or a fallback default model if invalid.
-     *
-     * @param string $provider
-     * @param ?string $model
-     * @param Store $store
-     * @return string
-     * @throws \Exception
+     * Speech-to-text for the store, on its OWN provider with its own key, or
+     * null when that provider has no transcription here — then the key is
+     * sent nowhere. Today only OpenAI (Whisper) transcribes; Gemini and Grok
+     * stores get null, so a Gemini or xAI key never reaches OpenAI.
      */
-    private static function validateAndGetModel(string $provider, ?string $model, Store $store): string
+    public static function makeTranscriber(Store $store): ?OpenAIService
     {
-        // Check if provider is supported
-        if (!isset(self::SUPPORTED_MODELS[$provider])) {
-            throw new \Exception("Unsupported AI provider: {$provider}");
+        if ($store->ai_provider !== 'openai' || ! $store->ai_api_key) {
+            return null;
         }
 
-        // If model is provided and valid, use it
-        if ($model && in_array($model, self::SUPPORTED_MODELS[$provider], true)) {
-            return $model;
-        }
-
-        // Model is missing or invalid - use default and log warning
-        $defaultModel = self::DEFAULT_MODELS[$provider];
-        
-        Log::warning('AI model invalid or missing, using default', [
-            'store_id' => $store->id,
-            'store_name' => $store->name,
-            'provider' => $provider,
-            'requested_model' => $model,
-            'default_model' => $defaultModel,
-            'supported_models' => self::SUPPORTED_MODELS[$provider],
-        ]);
-
-        return $defaultModel;
+        return new OpenAIService($store->ai_api_key, 'whisper-1');
     }
 }

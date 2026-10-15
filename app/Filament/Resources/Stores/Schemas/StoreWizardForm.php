@@ -8,6 +8,8 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
+use App\Factories\AIServiceFactory;
+use Illuminate\Validation\Rule;
 
 class StoreWizardForm
 {
@@ -56,6 +58,8 @@ class StoreWizardForm
                 TextInput::make('wa_phone_number_id')
                     ->label('Phone Number ID')
                     ->required()
+                    // A number routes to exactly one store (also a unique index).
+                    ->unique(ignoreRecord: true)
                     ->helperText('Found in Meta > Settings > Phone Numbers. Format: 123456789')
                     ->placeholder('e.g., 123456789')
                     ->columnSpan(1),
@@ -149,14 +153,12 @@ class StoreWizardForm
                 Select::make('ai_model')
                     ->label('AI Model')
                     ->options(function (Get $get) {
-                        $provider = $get('ai_provider');
-                        if (!$provider) {
-                            return [];
-                        }
-                        
-                        $models = config("ai.models.{$provider}", []);
+                        $models = AIServiceFactory::enabledModels($get('ai_provider'));
+
                         return array_combine($models, $models);
                     })
+                    // Same list the AI factory accepts: checked on the server.
+                    ->rule(fn (Get $get) => Rule::in(AIServiceFactory::enabledModels($get('ai_provider'))))
                     ->default('gpt-4o')
                     ->required()
                     ->reactive()

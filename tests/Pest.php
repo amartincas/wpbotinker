@@ -33,6 +33,13 @@ pest()->extend(TestCase::class)
 |
 */
 
+function nextStoreSequence(): int
+{
+    static $sequence = 0;
+
+    return ++$sequence;
+}
+
 function makeStore(array $overrides = []): Store
 {
     return Store::create(array_merge([
@@ -43,7 +50,8 @@ function makeStore(array $overrides = []): Store
         'ai_model' => 'gpt-4o-mini',
         'ai_api_key' => 'sk-test',
         'wa_access_token' => 'wa-token',
-        'wa_phone_number_id' => (string) random_int(100000, 999999),
+        // Unique per store (stores.wa_phone_number_id is a unique index).
+        'wa_phone_number_id' => (string) (100000 + nextStoreSequence()),
         'wa_verify_token' => Str::random(32),
         'wa_app_secret' => 'app-secret',
     ], $overrides));

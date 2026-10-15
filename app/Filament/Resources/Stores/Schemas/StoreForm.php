@@ -2,11 +2,13 @@
 
 namespace App\Filament\Resources\Stores\Schemas;
 
+use App\Factories\AIServiceFactory;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Schemas\Schema;
 use Filament\Schemas\Components\Utilities\Get;
+use Illuminate\Validation\Rule;
 
 class StoreForm
 {
@@ -32,14 +34,12 @@ class StoreForm
                     ->required()
                     ->rule('string')
                     ->options(function (Get $get) {
-                        $provider = $get('ai_provider');
-                        if (!$provider) {
-                            return [];
-                        }
-                        
-                        $models = config("ai.models.{$provider}", []);
+                        $models = AIServiceFactory::enabledModels($get('ai_provider'));
+
                         return array_combine($models, $models);
                     })
+                    // Same list the AI factory accepts: checked on the server.
+                    ->rule(fn (Get $get) => Rule::in(AIServiceFactory::enabledModels($get('ai_provider'))))
                     ->reactive(),
                 TextInput::make('ai_api_key')
                     ->label('AI API Key')
@@ -53,6 +53,8 @@ class StoreForm
                 TextInput::make('wa_phone_number_id')
                     ->label('Phone Number ID')
                     ->required()
+                    // A number routes to exactly one store (also a unique index).
+                    ->unique(ignoreRecord: true)
                     ->columnSpanFull(),
                 TextInput::make('wa_business_account_id')
                     ->label('WABA ID (Business Account)')

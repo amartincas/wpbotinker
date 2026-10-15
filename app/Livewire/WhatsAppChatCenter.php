@@ -8,6 +8,7 @@ use App\Models\Store;
 use App\Models\WhatsAppMessage;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\On;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -27,6 +28,11 @@ class WhatsAppChatCenter extends Component
     public bool $botActive = true;
     public string $newMessage = ''; // For text input field
     public ?int $filterStoreId = null; // For superuser store filtering
+
+    // Store the selected conversation belongs to, fixed server-side when it
+    // is selected (never set by the client). Sends use it, re-authorized.
+    #[Locked]
+    public ?int $selectedStoreId = null;
     public $stores = []; // Available stores for superuser filter
     public ?int $selectedLeadId = null; // For JS modal
     public $whatsappTemplates = [];    // List templates
@@ -84,6 +90,54 @@ class WhatsAppChatCenter extends Component
     {
         $this->selectedPhone = $phone;
         Cache::put($this->selectionCacheKey(), $phone, now()->addMinutes(30));
+    }
+
+    /**
+     * The store a conversation with $phone belongs to, for the current
+     * user: an operator's own store; a super admin's filtered store; for a
+     * super admin without a filter, the phone's store only when exactly one
+     * store talks to it. A phone shared by several stores gives null: the
+     * super admin must pick the store in the filter.
+     */
+    private function conversationStoreId(string $phone): ?int
+    {
+        $user = Auth::user();
+
+        if (!$user?->is_super_admin) {
+            return $user?->store_id;
+        }
+
+        if ($this->filterStoreId) {
+            return $this->filterStoreId;
+        }
+
+        $storeIds = WhatsAppMessage::where('customer_phone', $phone)->distinct()->limit(2)->pluck('store_id');
+
+        if ($storeIds->count() > 1) {
+            Log::info('Chat Center: phone shared by several stores, store filter required');
+        }
+
+        return $storeIds->count() === 1 ? (int) $storeIds->first() : null;
+    }
+
+    /**
+     * The store a send goes out from: explicitly selected (filter or the
+     * selected conversation) and authorized for the current user. Never
+     * inferred from a phone's messages at send time.
+     */
+    private function sendingStore(): ?Store
+    {
+        $user = Auth::user();
+
+        if (!$user) {
+            return null;
+        }
+
+        $storeId = $user->is_super_admin
+            ? ($this->filterStoreId ?: $this->selectedStoreId)
+            : $user->store_id;
+
+        return $storeId ? Store::find($storeId) : null;
     }
 
     private function selectionCacheKey(): string
@@ -201,26 +255,10 @@ class WhatsAppChatCenter extends Component
         // Fetch message statuses for this conversation
         $this->getMessageStatuses();
 
-        $isSuperAdmin = Auth::user()?->is_super_admin ?? false;
-        
-        if ($isSuperAdmin && !$this->filterStoreId) {
-            // Superuser without filter - need to find the store this conversation belongs to
-            $firstMessage = WhatsAppMessage::query()
-                ->where('customer_phone', (string) $phone)
-                ->first();
-            
-            if ($firstMessage) {
-                $storeId = $firstMessage->store_id;
-            }
-        } elseif ($isSuperAdmin && $this->filterStoreId) {
-            // Using filtered store
-            $storeId = $this->filterStoreId;
-        } else {
-            // Regular user
-            $storeId = Auth::user()?->store_id;
-        }
+        $storeId = $this->conversationStoreId((string) $phone);
+        $this->selectedStoreId = $storeId;
 
-        if ($storeId ?? false) {
+        if ($storeId) {
             // Check if a control record or marketing lead exists for this phone
             $lead = Lead::query()
                 ->where('store_id', $storeId)
@@ -271,31 +309,11 @@ class WhatsAppChatCenter extends Component
             return;
         }
 
-        $isSuperAdmin = Auth::user()?->is_super_admin ?? false;
-        
-        // Determine store_id for this message
-        if ($isSuperAdmin && !$this->filterStoreId) {
-            // Superuser without filter - find the store this conversation belongs to
-            $firstMessage = WhatsAppMessage::query()
-                ->where('customer_phone', $this->selectedPhone)
-                ->first();
-            
-            if ($firstMessage) {
-                $storeId = $firstMessage->store_id;
-            } else {
-                Log::warning('sendMessage: Cannot determine store for superuser without existing messages');
-                return;
-            }
-        } elseif ($isSuperAdmin && $this->filterStoreId) {
-            // Using filtered store
-            $storeId = $this->filterStoreId;
-        } else {
-            // Regular user
-            $storeId = Auth::user()?->store_id;
-        }
-        
+        $storeId = $this->sendingStore()?->id;
+
         if (!$storeId) {
-            Log::warning('sendMessage: No store_id available');
+            Log::warning('sendMessage: no explicit, authorized store selected');
+            $this->dispatch('store-selection-required');
             return;
         }
 
@@ -436,6 +454,7 @@ class WhatsAppChatCenter extends Component
 
         $this->filterStoreId = (int) $value ?: null;
         $this->setSelectedPhone(null);
+        $this->selectedStoreId = null;
         $this->messages = [];
         $this->loadConversations();
         
@@ -447,7 +466,6 @@ class WhatsAppChatCenter extends Component
 
     public function sendTemplate(int $templateId, array $customValues = [], ?string $externalPhone = null): void
     {
-        $isSuperAdmin = Auth::user()?->is_super_admin ?? false;
         $targetPhone = $this->selectedPhone;
         $isExternalSend = false;
 
@@ -463,27 +481,15 @@ class WhatsAppChatCenter extends Component
             $isExternalSend = true;
         }
 
-        if ($isSuperAdmin && !$this->filterStoreId) {
-            $storeId = $targetPhone
-                ? WhatsAppMessage::query()->where('customer_phone', $targetPhone)->value('store_id')
-                : null;
-        } elseif ($isSuperAdmin && $this->filterStoreId) {
-            $storeId = $this->filterStoreId;
-        } else {
-            $storeId = Auth::user()?->store_id;
-        }
+        $store = $this->sendingStore();
 
-        if (!$storeId) {
-            Log::warning('sendTemplate: store_id could not be resolved', ['selected_phone' => $this->selectedPhone, 'external_phone' => $externalPhone]);
-            $this->dispatch('template-sent-error');
-            return;
-        }
-
-        $store = Store::find($storeId);
         if (!$store) {
+            Log::warning('sendTemplate: no explicit, authorized store selected', ['is_external_send' => $isExternalSend]);
             $this->dispatch('template-sent-error');
             return;
         }
+
+        $storeId = $store->id;
 
         $template = \App\Models\WhatsAppTemplate::where('id', $templateId)
             ->where('store_id', $storeId)
