@@ -41,10 +41,16 @@ class CapabilityRunner
         private readonly CustomerMemory $memory,
     ) {}
 
-    /** Null when the product has no capability. */
-    public function run(Customer $customer, Product $product, DomainModule $domain): ?CapabilityResult
+    /**
+     * Runs the product's capability, or $capabilityKey when given — which
+     * must be one the product itself configures (main or free sample).
+     * Null when there is nothing to run.
+     */
+    public function run(Customer $customer, Product $product, DomainModule $domain, ?string $capabilityKey = null): ?CapabilityResult
     {
-        if (blank($product->capability_key)) {
+        $capabilityKey ??= $product->capability_key;
+
+        if (blank($capabilityKey)) {
             return null;
         }
 
@@ -52,8 +58,12 @@ class CapabilityRunner
             throw new InvalidArgumentException("Product [{$product->id}] does not belong to domain [{$domain->key()}] of the customer's store.");
         }
 
-        $this->domains->assertProductConfiguration($domain->key(), $product->required_facts ?? [], $product->capability_key, storeId: $customer->store_id);
-        $capability = $this->domains->capabilityFor($domain->key(), $product->capability_key, $customer->store_id);
+        if (! in_array($capabilityKey, [$product->capability_key, $product->sample_capability_key], true)) {
+            throw new InvalidArgumentException("Product [{$product->id}] does not configure capability [{$capabilityKey}].");
+        }
+
+        $this->domains->assertProductConfiguration($domain->key(), $product->required_facts ?? [], $product->capability_key, $product->sample_capability_key, $customer->store_id);
+        $capability = $this->domains->capabilityFor($domain->key(), $capabilityKey, $customer->store_id);
 
         // If the inputs change while computing (correction, revocation), the
         // result is discarded and computed again from the current inputs: a

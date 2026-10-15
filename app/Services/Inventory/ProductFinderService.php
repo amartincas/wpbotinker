@@ -31,24 +31,48 @@ class ProductFinderService
      * per product, so it doesn't depend on the ad's prefilled message
      * matching the product name.
      *
+     * An ad ID tagged on more than one product of the store is ambiguous:
+     * no product is returned (rather than an arbitrary first one), so the
+     * conversation resolves the product as it does without an ad.
+     *
      * @param string $adId
      * @param int $storeId
      * @return Product|null
      */
     public function findProductByAdId(string $adId, int $storeId): ?Product
     {
-        $product = Product::where('store_id', $storeId)
+        $matches = Product::where('store_id', $storeId)
             ->whereJsonContains('meta_ad_ids', $adId)
             ->with('images')
-            ->first();
+            ->limit(2)
+            ->get();
+
+        $product = $matches->count() === 1 ? $matches->first() : null;
 
         Log::info('PRODUCT_FINDER: Resolución por ad_id de Meta', [
             'store_id' => $storeId,
             'ad_id' => $adId,
             'matched_product_id' => $product?->id,
+            'ambiguous' => $matches->count() > 1,
         ]);
 
         return $product;
+    }
+
+    /**
+     * Ids of the store's products tagged with this ad ID, in a stable order:
+     * more than one means the ad alone cannot tell which product it is.
+     *
+     * @return list<int>
+     */
+    public function productIdsForAdId(string $adId, int $storeId): array
+    {
+        return Product::where('store_id', $storeId)
+            ->whereJsonContains('meta_ad_ids', $adId)
+            ->orderBy('id')
+            ->limit(10)
+            ->pluck('id')
+            ->all();
     }
 
     /**

@@ -39,8 +39,10 @@ class PromptAssembler
      * @param  array<string, mixed>  $facts  fact key => value, already filtered for this domain
      * @param  Collection<int, KnowledgeChunk>|null  $fragments
      * @param  CapabilityResult|null  $computed  output of the product's capability, if any
+     * @param  string|null  $sampleInstructions  set when this answer is the product's free sample:
+     *                                           they replace the full service instructions
      */
-    public function build(Store $store, ?DomainModule $domain, ?Product $product, array $facts = [], ?Collection $fragments = null, ?CapabilityResult $computed = null): string
+    public function build(Store $store, ?DomainModule $domain, ?Product $product, array $facts = [], ?Collection $fragments = null, ?CapabilityResult $computed = null, ?string $sampleInstructions = null): string
     {
         $prompt = trim($this->neutralize($store->system_prompt ?? '')) ?: 'You are an assistant.';
 
@@ -53,13 +55,19 @@ class PromptAssembler
 
             foreach ([
                 'Descripción' => $product->description,
-                'Instrucciones' => $product->ai_sales_strategy,
+                'Instrucciones' => $sampleInstructions === null ? $product->ai_sales_strategy : null,
                 'Reglas' => $product->faq_context,
             ] as $label => $value) {
                 if (filled($value)) {
                     $prompt .= "\n{$label}: ".trim($this->neutralize($value));
                 }
             }
+        }
+
+        if ($product && $sampleInstructions !== null) {
+            $prompt .= "\n\n### MUESTRA GRATUITA\n"
+                .'Esta respuesta es una muestra gratuita y limitada: entrega solo lo que indican estas instrucciones, no el servicio completo.'
+                ."\n".trim($this->neutralize($sampleInstructions));
         }
 
         if ($domain && $facts !== []) {

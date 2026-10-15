@@ -86,7 +86,7 @@ class ProductResolver
      *
      * @return Collection<int, Product>
      */
-    private function catalog(Store $store): Collection
+    public function catalog(Store $store): Collection
     {
         return Product::where('store_id', $store->id)
             ->whereIn('domain_key', $this->domains->keys($store->id))

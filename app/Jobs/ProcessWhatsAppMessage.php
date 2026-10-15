@@ -54,6 +54,8 @@ class ProcessWhatsAppMessage implements ShouldQueue
         public ?string $messageType = null,
         public ?string $mediaId = null,
         public ?int $productContext = null,
+        /** Products sharing the ad the customer came from (2+): ask which one. */
+        public ?array $adProductCandidates = null,
     ) {}
 
     /**
@@ -210,6 +212,13 @@ class ProcessWhatsAppMessage implements ShouldQueue
             if ($this->store->usesKnowledgeMode()) {
                 app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId);
 
+                return;
+            }
+
+            // The ad the customer came from is shared by several products:
+            // ask which one, never guess (the reply names the product, and
+            // the existing text search takes it from there).
+            if (count($this->adProductCandidates ?? []) > 1 && $this->askWhichAdProduct()) {
                 return;
             }
 
@@ -529,6 +538,50 @@ class ProcessWhatsAppMessage implements ShouldQueue
             // every attempt.
             throw $e;
         }
+    }
+
+    /**
+     * Sales flow: asks which of the products sharing the customer's ad they
+     * mean. False when fewer than two of them still exist in the store.
+     */
+    private function askWhichAdProduct(): bool
+    {
+        $names = Product::where('store_id', $this->store->id)
+            ->whereIn('id', $this->adProductCandidates)
+            ->orderBy('id')
+            ->pluck('name');
+
+        if ($names->count() < 2) {
+            return false;
+        }
+
+        $question = "¿Sobre cuál de estos productos quieres información?\n"
+            .$names->map(fn (string $name) => "- {$name}")->implode("\n")
+            ."\n\nEscríbeme el nombre.";
+
+        WhatsAppMessage::create([
+            'store_id' => $this->store->id,
+            'customer_phone' => $this->from,
+            'role' => 'user',
+            'content' => $this->messageBody,
+        ]);
+
+        $questionMessage = WhatsAppMessage::create([
+            'store_id' => $this->store->id,
+            'customer_phone' => $this->from,
+            'role' => 'assistant',
+            'content' => $question,
+        ]);
+
+        $wamid = WhatsAppService::sendMessage($this->from, $question, $this->store);
+
+        if ($wamid) {
+            WhatsAppStatusTracker::trackMessage($questionMessage->id, $wamid);
+        }
+
+        Log::info('SALES_AD_AMBIGUOUS', ['store_id' => $this->store->id, 'candidate_count' => $names->count()]);
+
+        return true;
     }
 
     /**

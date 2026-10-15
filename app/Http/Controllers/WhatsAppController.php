@@ -240,6 +240,15 @@ class WhatsAppController extends Controller
         ? (new ProductFinderService())->findProductByAdId($adId, $store->id)?->id
         : null;
 
+    // An ad tagged on several products of the store names none of them:
+    // the sales flow asks the customer which one instead of guessing.
+    $adProductCandidates = null;
+
+    if ($adId && $productContext === null) {
+        $candidates = (new ProductFinderService())->productIdsForAdId($adId, $store->id);
+        $adProductCandidates = count($candidates) > 1 ? $candidates : null;
+    }
+
     // ctwa_clid es el click id que la Conversions API necesita para atribuir
     // una conversión al anuncio que originó la conversación. Solo viene en el
     // primer mensaje de la sesión de Click-to-WhatsApp, así que solo lo
@@ -258,7 +267,8 @@ class WhatsAppController extends Controller
         $phoneId,
         $type,
         $mediaId,
-        $productContext
+        $productContext,
+        $adProductCandidates
     );
 
     Log::info('WhatsApp message queued for processing', [

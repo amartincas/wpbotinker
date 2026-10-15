@@ -5,9 +5,15 @@ namespace App\Platform\Conversation;
 use App\Factories\AIServiceFactory;
 use App\Models\Conversation;
 use App\Models\Product;
+use App\Models\SampleDelivery;
 use App\Models\Store;
 use App\Models\WhatsAppMessage;
 use App\Platform\Capabilities\CapabilityRunner;
+use App\Platform\Commerce\AccessDecision;
+use App\Platform\Commerce\AccessGate;
+use App\Platform\Commerce\CommerceResponder;
+use App\Platform\Commerce\SampleLedger;
+use App\Platform\Contracts\DomainModule;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\CustomerMemory;
@@ -15,16 +21,23 @@ use App\Platform\Memory\FactCollector;
 use App\Services\WhatsAppService;
 use App\Services\WhatsAppStatusTracker;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
+use Throwable;
 
 /**
  * Conversation flow for stores in 'knowledge' mode (see
  * App\Models\Store::MODE_KNOWLEDGE). It only orchestrates Core services, in
  * order, and holds no domain or memory rules of its own:
  *
- *   FactCollector (pending answer) → ProductResolver (or clarification)
- *   → FactCollector (missing facts) → CustomerMemory (visible facts)
- *   → CapabilityRunner (computed result) → KnowledgeRetriever
+ *   FactCollector (pending answer) → CommerceResponder (commercial
+ *   requests, always served) → ProductResolver (or clarification)
+ *   → AccessGate → FactCollector (missing facts) → AccessGate again at
+ *   the entry of the protected service (full service, free sample via
+ *   SampleLedger, or the commercial answer) → CustomerMemory (visible
+ *   facts) → CapabilityRunner (computed result) → KnowledgeRetriever
  *   → PromptAssembler → LLM → reply.
  *
  * It never touches the sales flow (leads, Conversions API, catalog images).
@@ -32,6 +45,9 @@ use Illuminate\Support\Facades\Log;
 class ConversationPipeline
 {
     private const HISTORY_LIMIT = 10;
+
+    /** How long a generated sample waits for a retry (the job's retry window). */
+    private const SAMPLE_CACHE_MINUTES = 10;
 
     public function __construct(
         private readonly ProductResolver $resolver,
@@ -41,6 +57,9 @@ class ConversationPipeline
         private readonly KnowledgeRetriever $knowledge,
         private readonly PromptAssembler $prompts,
         private readonly CapabilityRunner $capabilities,
+        private readonly AccessGate $access,
+        private readonly SampleLedger $samples,
+        private readonly CommerceResponder $commerce,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -55,6 +74,17 @@ class ConversationPipeline
 
         if ($pending->reply !== null) {
             $this->reply($store, $from, $messageBody, $pending->reply, $pending->replyDomainKey);
+
+            return;
+        }
+
+        // Commercial requests (prices, plans, paying, renewing, payment
+        // status) are always served, with or without access.
+        $catalog = $this->resolver->catalog($store);
+        $target = $this->commercialTarget($store, $conversation, $messageBody, $adProductId, $catalog);
+
+        if ($commercial = $this->commerce->respond($store, $conversation, $customer, $messageBody, $catalog, $target)) {
+            $this->reply($store, $from, $messageBody, $commercial->text, $commercial->domainKey);
 
             return;
         }
@@ -88,6 +118,15 @@ class ConversationPipeline
 
         $conversation->update(['current_product_id' => $product?->id, 'pending_state' => null]);
 
+        // Commercial access, from persisted state only. Without access and
+        // without a sample to give, no facts are asked: the customer gets
+        // the commercial answer straight away.
+        if ($product && ($access = $this->access->decide($customer, $product)) && ! $access->allowed && ! $access->sampleAvailable) {
+            $this->replyBlocked($store, $from, $messageBody, $product, $access);
+
+            return;
+        }
+
         if ($product && $domain && ($question = $this->facts->require($conversation, $customer, $product, $domain, $pending->rejectionFor($product->id)))) {
             Log::info('PIPELINE_FACT_REQUESTED', ['store_id' => $store->id, 'customer_phone' => $from, 'domain_key' => $domain->key()]);
 
@@ -96,8 +135,152 @@ class ConversationPipeline
             return;
         }
 
+        // Checked again at the entry of the protected service: the state may
+        // have changed while facts were being collected. Without access, the
+        // only way in is the free sample, reserved before it is generated.
+        $sample = null;
+
+        if ($product && ! ($access = $this->access->decide($customer, $product))->allowed) {
+            $sample = $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
+
+            if ($sample === null) {
+                $this->replyBlocked($store, $from, $messageBody, $product, $access);
+
+                return;
+            }
+        }
+
+        try {
+            // A retry of the same message reuses the sample already generated.
+            $answer = $sample ? $this->rememberedSample($store, $wamid) : null;
+            $answer ??= $this->answer($store, $from, $messageBody, $customer, $product, $domain, $sample !== null);
+        } catch (Throwable $e) {
+            // Nothing was delivered: the sample stays available.
+            if ($sample) {
+                $this->samples->release($sample);
+            }
+
+            throw $e;
+        }
+
+        if ($answer === null) {
+            if ($sample) {
+                $this->samples->release($sample);
+            }
+
+            $this->reply($store, $from, $messageBody, "No pude completar tu solicitud sobre «{$product->name}» en este momento. Intenta de nuevo en unos minutos.", $domain?->key());
+
+            return;
+        }
+
+        if ($sample) {
+            $this->rememberSample($store, $wamid, $answer);
+            $this->deliverSample($store, $from, $messageBody, $answer."\n\n".$this->commerce->afterSampleText($product), $domain?->key(), $sample, $wamid);
+
+            return;
+        }
+
+        $this->reply($store, $from, $messageBody, $answer, $domain?->key());
+    }
+
+    /**
+     * Sends the sample first and records the turn only once WhatsApp took
+     * it: a sample that did not go out never appears in the history as
+     * given. If the send fails, the reservation is released and the job
+     * fails, so the existing queue retries try again (no turn was written,
+     * and the generated answer is reused, see rememberSample()).
+     *
+     * Once WhatsApp accepted it, nothing may fail the job any more: a retry
+     * would send the customer a contradicting offer. Both turns are saved
+     * in one transaction; if that fails, it is logged and the job ends.
+     */
+    private function deliverSample(Store $store, string $from, string $messageBody, string $answer, ?string $domainKey, SampleDelivery $reservation, ?string $inboundWamid): void
+    {
+        $sentWamid = WhatsAppService::sendMessage($from, $answer, $store);
+
+        if ($sentWamid === null) {
+            $this->samples->release($reservation);
+
+            throw new RuntimeException("The free sample of product [{$reservation->product_id}] could not be sent.");
+        }
+
+        try {
+            $this->forgetSample($store, $inboundWamid);
+            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $answer, $sentWamid);
+        } catch (Throwable $e) {
+            Log::error('SAMPLE_HISTORY_NOT_SAVED', [
+                'store_id' => $store->id,
+                'product_id' => $reservation->product_id,
+                'error' => $e::class,
+            ]);
+        }
+    }
+
+    /**
+     * The sample generated for this inbound message by an earlier attempt,
+     * so a retry does not call the LLM again. Null without a message id.
+     */
+    private function rememberedSample(Store $store, ?string $inboundWamid): ?string
+    {
+        $cached = $inboundWamid ? Cache::get($this->sampleCacheKey($store, $inboundWamid)) : null;
+
+        if (! is_string($cached)) {
+            return null;
+        }
+
+        try {
+            return Crypt::decryptString($cached);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /** Kept encrypted (it holds the customer's data) for the retry window of the job. */
+    private function rememberSample(Store $store, ?string $inboundWamid, string $answer): void
+    {
+        if ($inboundWamid) {
+            Cache::put($this->sampleCacheKey($store, $inboundWamid), Crypt::encryptString($answer), now()->addMinutes(self::SAMPLE_CACHE_MINUTES));
+        }
+    }
+
+    private function forgetSample(Store $store, ?string $inboundWamid): void
+    {
+        if ($inboundWamid) {
+            Cache::forget($this->sampleCacheKey($store, $inboundWamid));
+        }
+    }
+
+    private function sampleCacheKey(Store $store, string $inboundWamid): string
+    {
+        return "sample-answer:{$store->id}:".hash('sha256', $inboundWamid);
+    }
+
+    /**
+     * The LLM answer for the product (its full service, or its free sample),
+     * or null when its capability failed: then nothing of the protected
+     * service is produced this turn.
+     */
+    private function answer(Store $store, string $from, string $messageBody, $customer, ?Product $product, ?DomainModule $domain, bool $isSample): ?string
+    {
         $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
-        $computed = $product && $domain ? $this->capabilities->run($customer, $product, $domain) : null;
+        $capabilityKey = $isSample ? $product?->sample_capability_key : $product?->capability_key;
+        $computed = null;
+
+        if ($product && $domain && filled($capabilityKey)) {
+            try {
+                $computed = $this->capabilities->run($customer, $product, $domain, $capabilityKey);
+            } catch (Throwable $e) {
+                Log::error('CAPABILITY_FAILED', [
+                    'store_id' => $store->id,
+                    'product_id' => $product->id,
+                    'capability_key' => $capabilityKey,
+                    'error' => $e::class,
+                ]);
+
+                return null;
+            }
+        }
+
         // A computed result that names its knowledge entries gets exactly
         // those; otherwise knowledge is searched with the message, as before.
         $keyed = $computed !== null && $computed->knowledgeKeys !== [];
@@ -109,7 +292,7 @@ class ConversationPipeline
 
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
-            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed),
+            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $isSample ? $product->sample_instructions : null),
             $this->history($store, $from, $domain?->key()),
         );
 
@@ -118,13 +301,54 @@ class ConversationPipeline
             'customer_phone' => $from,
             'domain_key' => $domain?->key(),
             'product_id' => $product?->id,
+            'sample' => $isSample,
             'fact_keys' => array_keys($facts),
-            'capability_key' => $computed ? $product->capability_key : null,
+            'capability_key' => $computed ? $capabilityKey : null,
             'knowledge_retrieval' => $keyed ? 'keys' : 'message',
             'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
         ]);
 
-        $this->reply($store, $from, $messageBody, $answer, $domain?->key());
+        return $answer;
+    }
+
+    private function replyBlocked(Store $store, string $from, string $messageBody, Product $product, AccessDecision $access): void
+    {
+        Log::info('PIPELINE_ACCESS_DENIED', [
+            'store_id' => $store->id,
+            'customer_phone' => $from,
+            'product_id' => $product->id,
+            'reason' => $access->reason,
+            'open_payment_status' => $access->openPayment?->status,
+        ]);
+
+        $this->reply($store, $from, $messageBody, $this->commerce->blockedReply($store, $product, $access), $product->domain_key);
+    }
+
+    /**
+     * The subscription product a commercial request is about: the ad's, the
+     * conversation's, the store's only one, or the one the message names.
+     * Null when there is none, or it is ambiguous (then the normal flow,
+     * with its clarification, takes over).
+     *
+     * @param  Collection<int, Product>  $catalog
+     */
+    private function commercialTarget(Store $store, Conversation $conversation, string $messageBody, ?int $adProductId, Collection $catalog): ?Product
+    {
+        $subscriptions = $catalog->filter(fn (Product $product) => $product->requiresSubscription())->values();
+
+        foreach ([$adProductId, $conversation->current_product_id] as $id) {
+            if ($id && ($product = $subscriptions->firstWhere('id', $id))) {
+                return $product;
+            }
+        }
+
+        if ($subscriptions->count() <= 1) {
+            return $subscriptions->first();
+        }
+
+        $resolution = $this->resolver->resolve($store, $conversation, $messageBody);
+
+        return $resolution->product?->requiresSubscription() ? $resolution->product : null;
     }
 
     /**
