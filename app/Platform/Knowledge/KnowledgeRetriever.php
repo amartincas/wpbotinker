@@ -96,6 +96,25 @@ class KnowledgeRetriever
     }
 
     /**
+     * Distinct section titles available to this store, domain and product
+     * (same scope as retrieval: active sources, the domain's chunks plus
+     * the current product's, never another store, domain or product).
+     *
+     * @return list<string>
+     */
+    public function headings(Store $store, string $domainKey, ?Product $product, int $limit = 300): array
+    {
+        return $this->scope($store, $domainKey, $product)
+            ->whereNotNull('heading')
+            ->orderBy('id')
+            ->pluck('heading')
+            ->unique(fn (string $heading) => $this->normalizeHeading($heading))
+            ->take($limit)
+            ->values()
+            ->all();
+    }
+
+    /**
      * This store and domain; domain-level chunks plus the current product's;
      * active sources only.
      */

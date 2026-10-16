@@ -14,7 +14,9 @@ use App\Platform\Commerce\AccessGate;
 use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
+use App\Platform\Contracts\ProvidesRetrievalGuide;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Knowledge\KnowledgePlanner;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\CustomerMemory;
 use App\Platform\Memory\FactCollector;
@@ -60,6 +62,7 @@ class ConversationPipeline
         private readonly AccessGate $access,
         private readonly SampleLedger $samples,
         private readonly CommerceResponder $commerce,
+        private readonly KnowledgePlanner $planner,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -290,6 +293,48 @@ class ConversationPipeline
             default => $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody),
         };
 
+        // The message alone found nothing (e.g. the customer only answered
+        // with their data): a domain with a retrieval guide picks the
+        // sections from the customer's data. Nothing is ever answered as if
+        // it rested on sources it does not have:
+        // - selection failed, or a free sample without sections: null (the
+        //   sample is released, nothing changes, the customer can retry);
+        // - a message that needs the sources but got none: a fixed reply
+        //   saying so, without the LLM;
+        // - a message that needs no sources (thanks, a greeting): answered
+        //   normally, without fragments.
+        $planned = false;
+
+        if (! $keyed && $fragments->isEmpty() && $domain instanceof ProvidesRetrievalGuide && trim($domain->retrievalGuide()) !== '') {
+            $plan = $this->planner->plan($store, $domain, $product, $messageBody, $facts, $isSample);
+            $planned = true;
+
+            if ($plan->failed || ($isSample && $plan->fragments->isEmpty())) {
+                Log::warning('PIPELINE_KNOWLEDGE_UNAVAILABLE', [
+                    'store_id' => $store->id,
+                    'domain_key' => $domain->key(),
+                    'product_id' => $product?->id,
+                    'sample' => $isSample,
+                    'plan_status' => $plan->status,
+                ]);
+
+                return null;
+            }
+
+            if ($plan->unsupported()) {
+                Log::info('PIPELINE_KNOWLEDGE_NOT_FOUND', [
+                    'store_id' => $store->id,
+                    'domain_key' => $domain->key(),
+                    'product_id' => $product?->id,
+                    'plan_status' => $plan->status,
+                ]);
+
+                return "No encontré información sobre eso en las fuentes de «{$domain->label()}». ¿Puedes contarme un poco más o preguntarlo de otra forma?";
+            }
+
+            $fragments = $plan->fragments;
+        }
+
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
             $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $isSample ? $product->sample_instructions : null),
@@ -304,7 +349,7 @@ class ConversationPipeline
             'sample' => $isSample,
             'fact_keys' => array_keys($facts),
             'capability_key' => $computed ? $capabilityKey : null,
-            'knowledge_retrieval' => $keyed ? 'keys' : 'message',
+            'knowledge_retrieval' => $keyed ? 'keys' : ($planned ? 'planned' : 'message'),
             'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
         ]);
 

@@ -3,6 +3,7 @@
 namespace App\Platform\Domains;
 
 use App\Platform\Contracts\DomainModule;
+use App\Platform\Contracts\ProvidesRetrievalGuide;
 use App\Platform\Memory\FactDefinition;
 use App\Platform\Memory\FactTypes;
 use App\Platform\Memory\FactValidation;
@@ -18,7 +19,7 @@ use InvalidArgumentException;
  * The instructions are untrusted text: they only ever reach the LLM prompt
  * (neutralized, under the Core rules), never code or tools.
  */
-final class ConfiguredDomain implements DomainModule
+final class ConfiguredDomain implements DomainModule, ProvidesRetrievalGuide
 {
     /**
      * @param  list<string>  $vocabulary
@@ -31,7 +32,13 @@ final class ConfiguredDomain implements DomainModule
         private readonly string $instructions,
         private readonly array $facts,
         private readonly FactTypes $types,
+        private readonly string $retrievalGuide = '',
     ) {}
+
+    public function retrievalGuide(): string
+    {
+        return $this->retrievalGuide;
+    }
 
     public function key(): string
     {

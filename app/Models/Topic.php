@@ -20,7 +20,7 @@ use InvalidArgumentException;
  * - {scope: domain, key, type, question, label?, sensitive?}: a fact of the
  *   topic itself, validated by its basic type.
  */
-#[Fillable(['store_id', 'key', 'label', 'vocabulary', 'instructions', 'facts', 'is_active', 'updated_by'])]
+#[Fillable(['store_id', 'key', 'label', 'vocabulary', 'instructions', 'retrieval_instructions', 'facts', 'is_active', 'updated_by'])]
 class Topic extends Model
 {
     public const KEY_PATTERN = '/^[a-z][a-z0-9_]*$/';
@@ -33,6 +33,8 @@ class Topic extends Model
     public const MAX_LABEL_LENGTH = 100;
 
     public const MAX_INSTRUCTIONS_LENGTH = 8000;
+
+    public const MAX_RETRIEVAL_INSTRUCTIONS_LENGTH = 2000;
 
     public const MAX_VOCABULARY_TERMS = 30;
 
@@ -112,6 +114,10 @@ class Topic extends Model
 
         if ($instructions === '' || mb_strlen($instructions) > self::MAX_INSTRUCTIONS_LENGTH) {
             $errors['instructions'] = 'Las instrucciones son obligatorias y tienen máximo '.self::MAX_INSTRUCTIONS_LENGTH.' caracteres.';
+        }
+
+        if (mb_strlen((string) $this->retrieval_instructions) > self::MAX_RETRIEVAL_INSTRUCTIONS_LENGTH) {
+            $errors['retrieval_instructions'] = 'La guía de selección tiene máximo '.self::MAX_RETRIEVAL_INSTRUCTIONS_LENGTH.' caracteres.';
         }
 
         $vocabulary = $this->vocabulary ?? [];

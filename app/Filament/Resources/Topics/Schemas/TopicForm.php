@@ -57,6 +57,12 @@ class TopicForm
                     ->maxLength(Topic::MAX_INSTRUCTIONS_LENGTH)
                     ->required()
                     ->columnSpanFull(),
+                Textarea::make('retrieval_instructions')
+                    ->label('Guía de selección de conocimiento (opcional)')
+                    ->helperText('Cómo relacionar los datos y el mensaje del cliente con los títulos (# Título) de las fuentes del tema, para cuando el mensaje solo no encuentra conocimiento. Describe qué dato del cliente apunta a qué títulos y qué hacer según lo que pregunte. Con guía, el bot no responde como si se basara en las fuentes cuando no encuentra la sección. Es texto para la IA: nunca se ejecuta.')
+                    ->rows(4)
+                    ->maxLength(Topic::MAX_RETRIEVAL_INSTRUCTIONS_LENGTH)
+                    ->columnSpanFull(),
                 Repeater::make('facts')
                     ->label('Datos que el bot puede pedir')
                     ->helperText('Cada producto del tema elige cuáles necesita. Se guardan en la memoria del cliente.')

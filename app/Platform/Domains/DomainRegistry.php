@@ -203,7 +203,7 @@ class DomainRegistry
                 continue;
             }
 
-            $domain = new ConfiguredDomain($topic->key, $topic->label, $topic->vocabulary ?? [], $topic->instructions, $topic->facts ?? [], $this->factTypes);
+            $domain = new ConfiguredDomain($topic->key, $topic->label, $topic->vocabulary ?? [], $topic->instructions, $topic->facts ?? [], $this->factTypes, (string) $topic->retrieval_instructions);
 
             try {
                 $this->validateFacts($topic->key, $domain);

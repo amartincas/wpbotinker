@@ -182,7 +182,7 @@ class ProductResolver
         return Str::ascii(mb_strtolower(trim($text)));
     }
 
-    /** Whole-word match, so "signo" does not match inside "designo". */
+    /** Whole-word match, so "sol" does not match inside "solicitud". */
     private function containsWords(string $text, string $term): bool
     {
         return $term !== '' && preg_match('/\b'.preg_quote($term, '/').'\b/', $text) === 1;
