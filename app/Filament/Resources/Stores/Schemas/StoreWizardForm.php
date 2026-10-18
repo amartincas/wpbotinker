@@ -124,6 +124,13 @@ class StoreWizardForm
                     ->maxLength(2000)
                     ->columnSpanFull(),
 
+                Textarea::make('welcome_message')
+                    ->label('Mensaje de bienvenida (opcional)')
+                    ->helperText('Solo en modo conocimiento. Se envía una vez, junto con la primera respuesta, a quien escribe a esta tienda por primera vez: saludo, presentación del asistente y lo que ofrece. Vacío: sin bienvenida.')
+                    ->rows(4)
+                    ->maxLength(1000)
+                    ->columnSpanFull(),
+
                 // === AI PERSONA ===
                 Select::make('personality_type')
                     ->label('Persona Type')

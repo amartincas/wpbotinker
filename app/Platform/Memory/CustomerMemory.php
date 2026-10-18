@@ -109,6 +109,16 @@ class CustomerMemory
     }
 
     /**
+     * The current value of a person fact of the catalog (e.g. "name"), or
+     * null. For the store's own records, never for a domain prompt: domains
+     * read facts through visibleFacts(), which applies the sharing rules.
+     */
+    public function personValue(Customer $customer, string $factKey): mixed
+    {
+        return $this->currentFact($customer, "person:{$factKey}")?->plainValue();
+    }
+
+    /**
      * The current fact versions the domain may read, by fact key — same
      * rules as visibleFacts(), but keeping each version's identity.
      *

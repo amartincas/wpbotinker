@@ -16,6 +16,8 @@ use InvalidArgumentException;
  * - Same content already active in the same scope → nothing new is stored.
  * - Same origin with different content → a new version; the previous one
  *   is retired, so it stops being retrieved.
+ * - The purpose (topic knowledge or commercial resources) is part of the
+ *   scope: the two never replace or deduplicate each other.
  *
  * PDF is not supported yet (no parser dependency on purpose).
  */
@@ -35,11 +37,17 @@ class KnowledgeIngestor
         ?string $origin = null,
         ?string $license = null,
         string $language = 'es',
+        string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE,
+        string $delivery = KnowledgeSource::DELIVERY_REFERENCE,
     ): KnowledgeSource {
         $this->domains->get($domainKey, $store->id); // a registered module or an active topic of the store
 
         if (! in_array($sourceType, KnowledgeSource::TYPES, true)) {
             throw new InvalidArgumentException("Unsupported knowledge source type [{$sourceType}].");
+        }
+
+        if (! in_array($purpose, KnowledgeSource::PURPOSES, true) || ! in_array($delivery, KnowledgeSource::DELIVERIES, true)) {
+            throw new InvalidArgumentException("Unsupported knowledge source purpose [{$purpose}] or delivery [{$delivery}].");
         }
 
         if ($product && ($product->store_id !== $store->id || $product->domain_key !== $domainKey)) {
@@ -54,23 +62,30 @@ class KnowledgeIngestor
 
         $hash = hash('sha256', $text);
 
-        return DB::transaction(function () use ($store, $domainKey, $product, $title, $sourceType, $content, $origin, $license, $language, $text, $hash) {
+        return DB::transaction(function () use ($store, $domainKey, $product, $title, $sourceType, $content, $origin, $license, $language, $purpose, $delivery, $text, $hash) {
             // One writer at a time per store, so versions cannot collide.
             Store::whereKey($store->id)->lockForUpdate()->first();
 
             $scope = fn () => KnowledgeSource::where('store_id', $store->id)
                 ->where('domain_key', $domainKey)
-                ->where('product_id', $product?->id);
+                ->where('product_id', $product?->id)
+                ->where('purpose', $purpose);
 
-            $duplicate = $scope()->where('status', KnowledgeSource::STATUS_ACTIVE)->where('content_hash', $hash)->first();
+            // A change of delivery alone is a new version too.
+            $duplicate = $scope()->where('status', KnowledgeSource::STATUS_ACTIVE)->where('content_hash', $hash)->where('delivery', $delivery)->first();
 
             if ($duplicate) {
                 return $duplicate;
             }
 
-            $previous = $origin !== null
-                ? $scope()->where('origin', $origin)->where('status', KnowledgeSource::STATUS_ACTIVE)->first()
-                : null;
+            // Without an origin, the same content is the same resource: loaded
+            // again with another delivery, it retires its active version
+            // instead of running beside it.
+            $versions = fn () => $origin !== null
+                ? $scope()->where('origin', $origin)
+                : $scope()->whereNull('origin')->where('content_hash', $hash);
+
+            $previous = $versions()->where('status', KnowledgeSource::STATUS_ACTIVE)->first();
 
             $previous?->update(['status' => KnowledgeSource::STATUS_RETIRED, 'retired_at' => now()]);
 
@@ -78,12 +93,14 @@ class KnowledgeIngestor
                 'store_id' => $store->id,
                 'domain_key' => $domainKey,
                 'product_id' => $product?->id,
+                'purpose' => $purpose,
+                'delivery' => $delivery,
                 'title' => $title,
                 'source_type' => $sourceType,
                 'origin' => $origin,
                 'license' => $license,
                 'language' => $language,
-                'version' => $origin !== null ? (int) $scope()->where('origin', $origin)->max('version') + 1 : 1,
+                'version' => (int) $versions()->max('version') + 1,
                 'content_hash' => $hash,
                 'original_content' => $content,
                 'status' => KnowledgeSource::STATUS_ACTIVE,

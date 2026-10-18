@@ -194,6 +194,27 @@ class ProductForm
                                 }
                             })
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION),
+                        Textarea::make('sample_closing_message')
+                            ->label('Cierre de la muestra (opcional)')
+                            ->helperText('Texto que sigue a la muestra gratuita, antes de los planes y precios (que se agregan solos). Vacío: se usa el cierre estándar.')
+                            ->rows(3)
+                            ->maxLength(1000)
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        Textarea::make('commercial_instructions')
+                            ->label('Instrucciones comerciales (opcional)')
+                            ->helperText('Cómo ofrecer este producto a quien aún no tiene acceso: qué recurso comercial usar según lo que diga el cliente y cómo responder. Los recursos se cargan como fuentes de uso «Recursos comerciales». Sin instrucciones o sin recursos, se responde como hasta ahora. Precios y planes los agrega siempre el sistema.')
+                            ->rows(5)
+                            ->maxLength(4000)
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        Textarea::make('activation_message')
+                            ->label('Mensaje de activación (opcional)')
+                            ->helperText('Se agrega a la confirmación del pago cuando se envía como texto: cómo usar el servicio, ejemplos de consultas y una invitación a empezar. No se envía cuando la confirmación sale por plantilla de Meta.')
+                            ->rows(5)
+                            ->maxLength(2000)
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
                     ]),
 
                 // === PRODUCT GALLERY ===

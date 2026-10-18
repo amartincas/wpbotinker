@@ -27,6 +27,12 @@ class KnowledgeSourcesTable
                 TextColumn::make('product.name')
                     ->label('Producto')
                     ->placeholder('Todo el dominio'),
+                TextColumn::make('purpose')
+                    ->label('Uso')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state, KnowledgeSource $record) => $state === KnowledgeSource::PURPOSE_COMMERCIAL
+                        ? ($record->delivery === KnowledgeSource::DELIVERY_VERBATIM ? 'Comercial (literal)' : 'Comercial')
+                        : 'Conocimiento'),
                 TextColumn::make('version')
                     ->label('Versión'),
                 TextColumn::make('status')
@@ -46,6 +52,9 @@ class KnowledgeSourcesTable
                 SelectFilter::make('status')
                     ->label('Estado')
                     ->options([KnowledgeSource::STATUS_ACTIVE => 'Activa', KnowledgeSource::STATUS_RETIRED => 'Retirada']),
+                SelectFilter::make('purpose')
+                    ->label('Uso')
+                    ->options([KnowledgeSource::PURPOSE_KNOWLEDGE => 'Conocimiento', KnowledgeSource::PURPOSE_COMMERCIAL => 'Comercial']),
             ])
             ->recordActions([
                 // Retired sources stop being retrieved but keep their history.

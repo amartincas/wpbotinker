@@ -22,6 +22,9 @@ class StoreMessenger
     /** Conservative margin under Meta's 24 hours. */
     private const WINDOW_MINUTES = 23 * 60 + 30;
 
+    /** Sent instead of an empty template parameter, which Meta rejects. */
+    private const EMPTY_PARAMETER = '-';
+
     /**
      * @param  array<string, string>  $variables  template parameters by name (parameters_map)
      * @return string|null the WhatsApp message id
@@ -65,7 +68,7 @@ class StoreMessenger
     }
 
     /** The recipient wrote to this store within the window (conversations.last_session_at is set on every inbound message). */
-    private function windowOpen(Store $store, string $to): bool
+    public function windowOpen(Store $store, string $to): bool
     {
         $lastInbound = Conversation::where('store_id', $store->id)->where('customer_phone', $to)->value('last_session_at');
 
@@ -80,7 +83,9 @@ class StoreMessenger
         $resolved = [];
 
         foreach ($template->parameters_map ?? [] as $position => $name) {
-            $resolved[(int) $position] = (string) ($variables[$name] ?? '');
+            // Meta rejects an empty parameter (e.g. no expiry date on a rejection).
+            $value = trim((string) ($variables[$name] ?? ''));
+            $resolved[(int) $position] = $value === '' ? self::EMPTY_PARAMETER : $value;
         }
 
         ksort($resolved);

@@ -408,26 +408,28 @@ class WhatsAppChatCenter extends Component
                 'value_type' => gettype($value),
             ]);
             
-            // Create or update control record in leads table
-            // If this phone doesn't have a record yet, this creates a "bot control record"
-            // identified by customer_name = 'Unknown'
-            $lead = Lead::updateOrCreate(
-                [
+            // Only bot_active changes on the phone's existing leads: a real
+            // lead (a sale, a confirmed payment) keeps its name and summary.
+            // Without any lead yet, this creates a "bot control record"
+            // identified by customer_name = 'Unknown'.
+            $leads = Lead::where('store_id', $storeId)->where('customer_phone', (string) $this->selectedPhone);
+
+            if ($leads->exists()) {
+                $leads->update(['bot_active' => $botActiveValue]);
+            } else {
+                Lead::create([
                     'store_id' => $storeId,
                     'customer_phone' => (string) $this->selectedPhone,
-                ],
-                [
                     'customer_name' => 'Unknown', // Identifies as control record, not a marketing lead
                     'summary' => 'WhatsApp Chat Center',
                     'bot_active' => $botActiveValue,  // EXPLICIT: Pass the cast boolean value
-                ]
-            );
+                ]);
+            }
 
             Log::info('Bot Active status toggled (control record)', [
                 'store_id' => $storeId,
                 'customer_phone' => $this->selectedPhone,
-                'bot_active_saved' => $lead->bot_active,
-                'database_value' => (bool) $lead->bot_active,
+                'bot_active_saved' => $botActiveValue,
             ]);
         } catch (\Exception $e) {
             Log::error('updatedBotActive: Failed to update status', [

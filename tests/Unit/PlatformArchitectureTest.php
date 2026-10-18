@@ -23,6 +23,13 @@ arch('the Core does not depend on the sales flow or the admin UI')
         'App\Filament',
     ]);
 
+// A confirmed payment reaches the sales flow (Lead, Conversions API) only
+// through this observer, outside the Core and after the review commits.
+arch('the payment lead bridge lives outside the Core and runs after commit')
+    ->expect('App\Observers\PaymentObserver')
+    ->toImplement('Illuminate\Contracts\Events\ShouldHandleEventsAfterCommit')
+    ->not->toBeUsedIn('App\Platform');
+
 arch('domain modules implement the Core contract')
     ->expect('Tests\Support\Domains')
     ->toImplement('App\Platform\Contracts\DomainModule')

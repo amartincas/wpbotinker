@@ -27,6 +27,9 @@ use InvalidArgumentException;
     'access_mode',
     'sample_instructions',
     'sample_capability_key',
+    'sample_closing_message',
+    'activation_message',
+    'commercial_instructions',
 ])]
 class Product extends Model
 {

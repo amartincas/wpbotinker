@@ -3,6 +3,7 @@
 namespace App\Platform\Knowledge;
 
 use App\Factories\AIServiceFactory;
+use App\Models\KnowledgeSource;
 use App\Models\Product;
 use App\Models\Store;
 use App\Platform\Contracts\DomainModule;
@@ -21,6 +22,10 @@ use Throwable;
  * KnowledgeRetriever::retrieveByKeys(), so a title outside this store,
  * topic, product or active sources can never bring anything back.
  *
+ * The same selection serves the product's commercial resources
+ * (planCommercial()), guided by the product's commercial instructions and
+ * offered only commercial titles: the two purposes never mix.
+ *
  * Everything but the Core's own instruction is untrusted content: it is
  * neutralized and presented as data, never as orders.
  */
@@ -36,6 +41,14 @@ class KnowledgePlanner
         .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"needs_knowledge": true|false, "sections": ["título exacto", ...]}, '
         .'con como máximo '.self::MAX_SECTIONS.' títulos copiados tal cual de la lista, o "sections": [] si ninguno aplica.';
 
+    private const TOPIC_GUIDE = 'GUÍA DEL TEMA';
+
+    private const SAMPLE_REQUEST = 'Muestra gratuita: debe basarse en secciones de la lista; elige las que correspondan a los datos del cliente.';
+
+    private const MESSAGE_REQUEST = 'Respuesta a un mensaje del cliente.';
+
+    private const COMMERCIAL_REQUEST = 'Recursos comerciales para un cliente que aún no tiene acceso al servicio: elige solo los que respondan a lo que dice; si ninguno aplica, ninguno.';
+
     public function __construct(
         private readonly KnowledgeRetriever $retriever,
         private readonly PersonFacts $personFacts,
@@ -47,14 +60,39 @@ class KnowledgePlanner
      */
     public function plan(Store $store, DomainModule&ProvidesRetrievalGuide $domain, ?Product $product, string $message, array $facts, bool $sourcesRequired = false): KnowledgePlan
     {
+        return $this->select($store, $domain, $product, $message, $facts, KnowledgeSource::PURPOSE_KNOWLEDGE,
+            self::TOPIC_GUIDE, $domain->retrievalGuide(), $sourcesRequired ? self::SAMPLE_REQUEST : self::MESSAGE_REQUEST, $sourcesRequired);
+    }
+
+    /**
+     * The product's commercial resources (its own and its topic's) that fit
+     * this customer's message, guided by the product's commercial
+     * instructions. Choosing none is a valid answer: nothing to use.
+     *
+     * @param  array<string, mixed>  $facts  fact key => value the domain may read
+     */
+    public function planCommercial(Store $store, DomainModule $domain, Product $product, string $message, array $facts): KnowledgePlan
+    {
+        return $this->select($store, $domain, $product, $message, $facts, KnowledgeSource::PURPOSE_COMMERCIAL,
+            'GUÍA COMERCIAL DEL PRODUCTO', (string) $product->commercial_instructions, self::COMMERCIAL_REQUEST, false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $facts
+     */
+    private function select(Store $store, DomainModule $domain, ?Product $product, string $message, array $facts, string $purpose, string $guideLabel, string $guide, string $responseType, bool $sourcesRequired): KnowledgePlan
+    {
         // Consulted even without titles: it still tells a message that
         // needs the sources from one that does not.
-        $headings = $this->retriever->headings($store, $domain->key(), $product);
+        $headings = $this->retriever->headings($store, $domain->key(), $product, purpose: $purpose);
 
         try {
-            $raw = AIServiceFactory::make($store)->getResponse($this->request($domain, $message, $facts, $headings, $sourcesRequired), self::INSTRUCTION, []);
+            // The topic's knowledge keeps INSTRUCTION exactly; another purpose
+            // only names its own guide in it.
+            $instruction = str_replace('la '.self::TOPIC_GUIDE, 'la '.$guideLabel, self::INSTRUCTION);
+            $raw = AIServiceFactory::make($store)->getResponse($this->request($domain, $message, $facts, $headings, $guideLabel, $guide, $responseType), $instruction, []);
         } catch (Throwable $e) {
-            Log::warning('KNOWLEDGE_PLAN_FAILED', ['store_id' => $store->id, 'domain_key' => $domain->key(), 'reason' => 'provider', 'error' => $e::class]);
+            Log::warning('KNOWLEDGE_PLAN_FAILED', ['store_id' => $store->id, 'domain_key' => $domain->key(), 'purpose' => $purpose, 'reason' => 'provider', 'error' => $e::class]);
 
             return KnowledgePlan::failed();
         }
@@ -62,18 +100,19 @@ class KnowledgePlanner
         $parsed = $this->parse($raw);
 
         if ($parsed === null) {
-            Log::warning('KNOWLEDGE_PLAN_FAILED', ['store_id' => $store->id, 'domain_key' => $domain->key(), 'reason' => 'invalid_answer']);
+            Log::warning('KNOWLEDGE_PLAN_FAILED', ['store_id' => $store->id, 'domain_key' => $domain->key(), 'purpose' => $purpose, 'reason' => 'invalid_answer']);
 
             return KnowledgePlan::failed();
         }
 
         [$needsKnowledge, $sections] = $parsed;
         $needsKnowledge = $needsKnowledge || $sourcesRequired;
-        $fragments = $this->retriever->retrieveByKeys($store, $domain->key(), $product, $sections);
+        $fragments = $this->retriever->retrieveByKeys($store, $domain->key(), $product, $sections, purpose: $purpose);
 
         Log::info('KNOWLEDGE_PLANNED', [
             'store_id' => $store->id,
             'domain_key' => $domain->key(),
+            'purpose' => $purpose,
             'offered' => count($headings),
             'needs_knowledge' => $needsKnowledge,
             'selected' => count($sections),
@@ -90,13 +129,13 @@ class KnowledgePlanner
     /**
      * @param  list<string>  $headings
      */
-    private function request(DomainModule&ProvidesRetrievalGuide $domain, string $message, array $facts, array $headings, bool $sourcesRequired): string
+    private function request(DomainModule $domain, string $message, array $facts, array $headings, string $guideLabel, string $guide, string $responseType): string
     {
         $lines = [
             'TIPO DE RESPUESTA:',
-            $sourcesRequired ? 'Muestra gratuita: debe basarse en secciones de la lista; elige las que correspondan a los datos del cliente.' : 'Respuesta a un mensaje del cliente.',
+            $responseType,
             '',
-            'GUÍA DEL TEMA:', $this->neutralize($domain->retrievalGuide()), '', 'DATOS DEL CLIENTE:',
+            "{$guideLabel}:", $this->neutralize($guide), '', 'DATOS DEL CLIENTE:',
         ];
 
         foreach ($facts as $key => $value) {

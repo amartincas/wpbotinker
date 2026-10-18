@@ -23,6 +23,7 @@ use LogicException;
  *   exactly one is pending; otherwise the admin is asked which one.
  * - The decision goes through PaymentReview (locks, one activation): a
  *   repeated or concurrent answer changes nothing and tells nobody twice.
+ * - The customer is told before the admin gets the reply.
  * - Anything that cannot be resolved is answered without touching the
  *   payment.
  */
@@ -69,24 +70,37 @@ class AdminPaymentDecisions
             return;
         }
 
+        // The customer first: nothing that happens with the admin's reply
+        // may keep them from being told (a retry finds the payment decided
+        // and never tells them twice).
+        $this->notifyCustomer($store, $outcome, $approve);
+
         $product = $outcome->payment->product;
 
         $this->reply($store, $from, $message, $approve
             ? "✅ P-{$payment->id} confirmado. La suscripción a «{$product->name}» está activa hasta el {$outcome->subscription->expires_at->format('d/m/Y')}. Ya avisé al cliente."
             : "❌ P-{$payment->id} rechazado. No se concedió acceso. Ya avisé al cliente.");
-
-        $this->notifyCustomer($store, $outcome, $approve);
     }
 
     private function notifyCustomer(Store $store, ReviewOutcome $outcome, bool $approve): void
     {
         $payment = $outcome->payment;
         $product = $payment->product;
+        $phone = $payment->customer->customer_phone;
         $expires = $outcome->subscription?->expires_at->format('d/m/Y');
-
-        $sent = $this->messenger->send($store, $payment->customer->customer_phone, $approve
+        $text = $approve
             ? "✅ Tu pago de «{$product->name}» fue confirmado. Tu acceso está activo hasta el {$expires}."
-            : "Tu pago de «{$product->name}» no pudo confirmarse. Si crees que es un error, escríbenos o escribe «pagar» para intentarlo de nuevo.",
+            : "Tu pago de «{$product->name}» no pudo confirmarse. Si crees que es un error, escríbenos o escribe «pagar» para intentarlo de nuevo.";
+
+        // The product's activation message only travels as free text: an
+        // approved template cannot carry it.
+        $activation = $approve ? trim((string) $product->activation_message) : '';
+
+        if ($activation !== '' && $this->messenger->windowOpen($store, $phone)) {
+            $text .= "\n\n".$activation;
+        }
+
+        $sent = $this->messenger->send($store, $phone, $text,
             WhatsAppTemplate::EVENT_PAYMENT_RESULT,
             ['product_name' => $product->name, 'result' => $approve ? 'confirmado' : 'no confirmado', 'expires_at' => (string) $expires],
             $product->domain_key,

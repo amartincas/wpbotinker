@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable([
     'store_id',
     'product_id',
+    'payment_id',
     'customer_phone',
     'customer_name',
     'delivery_address_or_location',

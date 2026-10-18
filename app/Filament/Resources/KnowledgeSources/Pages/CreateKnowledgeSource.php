@@ -7,6 +7,7 @@ use App\Filament\Resources\KnowledgeSources\Schemas\KnowledgeSourceForm;
 use App\Models\KnowledgeSource;
 use App\Models\Product;
 use App\Models\Store;
+use App\Platform\Commerce\CommercialClaims;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeFile;
 use App\Platform\Knowledge\KnowledgeIngestor;
@@ -51,6 +52,15 @@ class CreateKnowledgeSource extends CreateRecord
                 ?? throw ValidationException::withMessages(['data.product_id' => 'El producto no pertenece a esta tienda y dominio.']);
         }
 
+        $purpose = (string) ($data['purpose'] ?? KnowledgeSource::PURPOSE_KNOWLEDGE);
+        $delivery = $purpose === KnowledgeSource::PURPOSE_COMMERCIAL ? (string) ($data['delivery'] ?? KnowledgeSource::DELIVERY_REFERENCE) : KnowledgeSource::DELIVERY_REFERENCE;
+
+        // A verbatim resource reaches the customer as written: it may not
+        // state prices or amounts, which only the product's plans give.
+        if ($delivery === KnowledgeSource::DELIVERY_VERBATIM && app(CommercialClaims::class)->amount(strip_tags($content)) !== null) {
+            throw ValidationException::withMessages(['data.file' => "{$fileName}: un recurso literal no puede incluir precios, importes, monedas ni porcentajes. Los precios los agrega el sistema desde los planes del producto: quítalos del archivo."]);
+        }
+
         try {
             $source = app(KnowledgeIngestor::class)->ingest(
                 $store,
@@ -62,6 +72,8 @@ class CreateKnowledgeSource extends CreateRecord
                 filled($data['origin'] ?? null) ? $data['origin'] : mb_substr("upload:{$fileName}", 0, 191),
                 $data['license'] ?? null,
                 (string) ($data['language'] ?? 'es'),
+                $purpose,
+                $delivery,
             );
         } catch (InvalidArgumentException $e) {
             throw ValidationException::withMessages(['data.file' => "{$fileName}: {$e->getMessage()}"]);

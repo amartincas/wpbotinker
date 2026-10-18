@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\KnowledgeSources\Schemas;
 
 use App\Filament\Resources\KnowledgeSources\KnowledgeSourceResource;
+use App\Models\KnowledgeSource;
 use App\Models\Product;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeFile;
@@ -42,9 +43,29 @@ class KnowledgeSourceForm
                     })
                     ->live()
                     ->required(),
+                Select::make('purpose')
+                    ->label('Uso')
+                    ->options([
+                        KnowledgeSource::PURPOSE_KNOWLEDGE => 'Conocimiento del tema (respuestas y muestras)',
+                        KnowledgeSource::PURPOSE_COMMERCIAL => 'Recursos comerciales (para clientes sin acceso)',
+                    ])
+                    ->default(KnowledgeSource::PURPOSE_KNOWLEDGE)
+                    ->helperText('Los recursos comerciales (beneficios, objeciones, testimonios, bonos…) nunca se usan para responder ni para la muestra: solo para ofrecer el producto a quien aún no tiene acceso, según sus instrucciones comerciales.')
+                    ->live()
+                    ->required(),
+                Select::make('delivery')
+                    ->label('Entrega')
+                    ->options([
+                        KnowledgeSource::DELIVERY_REFERENCE => 'Referencia: la IA puede redactarlo, sin ir más allá de lo que dice',
+                        KnowledgeSource::DELIVERY_VERBATIM => 'Literal: se envía tal cual está escrito',
+                    ])
+                    ->default(KnowledgeSource::DELIVERY_REFERENCE)
+                    ->helperText('Usa «Literal» para testimonios o textos que no deben reescribirse. Un recurso literal no puede incluir precios, importes, monedas ni porcentajes: los precios los agrega el sistema desde los planes.')
+                    ->visible(fn (Get $get) => $get('purpose') === KnowledgeSource::PURPOSE_COMMERCIAL)
+                    ->required(),
                 Select::make('product_id')
                     ->label('Producto (opcional)')
-                    ->helperText('Vacío: el conocimiento sirve a todo el dominio o tema.')
+                    ->helperText('Vacío: sirve a todo el dominio o tema (también a todos sus productos).')
                     ->options(fn (Get $get) => Product::where('store_id', KnowledgeSourceResource::storeIdFor(['store_id' => $get('store_id')]))
                         ->where('domain_key', (string) $get('domain_key'))
                         ->pluck('name', 'id')

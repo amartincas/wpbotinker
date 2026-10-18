@@ -46,6 +46,13 @@ class CommerceResponder
     ];
 
     /**
+     * Terms that also carry an everyday meaning ("vale la pena", "el valor
+     * de…", "un plan de comidas", "tu estado de ánimo"): a text using them
+     * is not, by that alone, stating a price or a payment fact.
+     */
+    private const EVERYDAY_TERMS = ['vale', 'valor', 'plan', 'planes', 'estado'];
+
+    /**
      * What a commercial term may refer to, besides the product's own name.
      * Only unambiguous words: "plan", "servicio" or "mensualidad" also name
      * everyday things ("pagar el servicio de luz").
@@ -102,6 +109,19 @@ class CommerceResponder
         };
     }
 
+    /**
+     * The price and payment-status terms of this classifier that, in a text,
+     * state a transactional fact (e.g. "precio", "mensualidad", "pagado"),
+     * normalized like the classifier (lowercase, no accents). Reused by
+     * CommercialClaims so both rules stay one list.
+     *
+     * @return list<string>
+     */
+    public static function priceTerms(): array
+    {
+        return array_values(array_diff([...self::TERMS[self::INTENT_PRICES], ...self::TERMS[self::INTENT_STATUS]], self::EVERYDAY_TERMS));
+    }
+
     /** What a customer without access gets instead of the protected service. */
     public function blockedReply(Store $store, Product $product, AccessDecision $access): string
     {
@@ -123,7 +143,10 @@ class CommerceResponder
     /** The offer that follows a delivered free sample. */
     public function afterSampleText(Product $product): string
     {
-        return "Esta fue tu muestra gratuita de «{$product->name}».\n\n".$this->offerText($product);
+        // The product's own closing when configured; the plans always come from the catalog.
+        $closing = trim((string) $product->sample_closing_message) ?: "Esta fue tu muestra gratuita de «{$product->name}».";
+
+        return $closing."\n\n".$this->offerText($product);
     }
 
     private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product): CommerceReply

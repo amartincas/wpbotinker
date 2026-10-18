@@ -26,7 +26,11 @@ class LeadObserver
             return;
         }
 
-        LeadAlertService::notify($lead);
+        // A confirmed subscription payment (PaymentObserver) was already
+        // alerted to the admin with its receipt: no second alert.
+        if ($lead->payment_id === null) {
+            LeadAlertService::notify($lead);
+        }
 
         MetaConversionsApiService::sendLeadEvent(
             $lead->store,

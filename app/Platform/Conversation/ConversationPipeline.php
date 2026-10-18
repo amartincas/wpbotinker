@@ -12,6 +12,7 @@ use App\Platform\Capabilities\CapabilityRunner;
 use App\Platform\Commerce\AccessDecision;
 use App\Platform\Commerce\AccessGate;
 use App\Platform\Commerce\CommerceResponder;
+use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Contracts\ProvidesRetrievalGuide;
@@ -38,7 +39,8 @@ use Throwable;
  *   requests, always served) → ProductResolver (or clarification)
  *   → AccessGate → FactCollector (missing facts) → AccessGate again at
  *   the entry of the protected service (full service, free sample via
- *   SampleLedger, or the commercial answer) → CustomerMemory (visible
+ *   SampleLedger, or the commercial answer, with CommercialAdvisor's
+ *   configured resources when they fit) → CustomerMemory (visible
  *   facts) → CapabilityRunner (computed result) → KnowledgeRetriever
  *   → PromptAssembler → LLM → reply.
  *
@@ -50,6 +52,9 @@ class ConversationPipeline
 
     /** How long a generated sample waits for a retry (the job's retry window). */
     private const SAMPLE_CACHE_MINUTES = 10;
+
+    /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
+    private ?string $welcome = null;
 
     public function __construct(
         private readonly ProductResolver $resolver,
@@ -63,6 +68,7 @@ class ConversationPipeline
         private readonly SampleLedger $samples,
         private readonly CommerceResponder $commerce,
         private readonly KnowledgePlanner $planner,
+        private readonly CommercialAdvisor $advisor,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -72,6 +78,7 @@ class ConversationPipeline
             ['last_session_at' => now()],
         );
         $customer = $this->memory->customerFor($store, $from);
+        $this->welcome = $this->welcomeFor($store, $from);
 
         $pending = $this->facts->answerPending($conversation, $customer, $messageBody, $wamid);
 
@@ -125,12 +132,16 @@ class ConversationPipeline
         // without a sample to give, no facts are asked: the customer gets
         // the commercial answer straight away.
         if ($product && ($access = $this->access->decide($customer, $product)) && ! $access->allowed && ! $access->sampleAvailable) {
-            $this->replyBlocked($store, $from, $messageBody, $product, $access);
+            $this->replyBlocked($store, $from, $messageBody, $customer, $product, $domain, $access);
 
             return;
         }
 
-        if ($product && $domain && ($question = $this->facts->require($conversation, $customer, $product, $domain, $pending->rejectionFor($product->id)))) {
+        // What the customer asked: when this message only answered a question
+        // for the product's data, the query that led to that question.
+        $query = ($product ? $pending->originFor($product->id) : null) ?? $messageBody;
+
+        if ($product && $domain && ($question = $this->facts->require($conversation, $customer, $product, $domain, $pending->rejectionFor($product->id), $query))) {
             Log::info('PIPELINE_FACT_REQUESTED', ['store_id' => $store->id, 'customer_phone' => $from, 'domain_key' => $domain->key()]);
 
             $this->reply($store, $from, $messageBody, $question, $domain->key());
@@ -147,7 +158,7 @@ class ConversationPipeline
             $sample = $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
 
             if ($sample === null) {
-                $this->replyBlocked($store, $from, $messageBody, $product, $access);
+                $this->replyBlocked($store, $from, $messageBody, $customer, $product, $domain, $access);
 
                 return;
             }
@@ -156,7 +167,7 @@ class ConversationPipeline
         try {
             // A retry of the same message reuses the sample already generated.
             $answer = $sample ? $this->rememberedSample($store, $wamid) : null;
-            $answer ??= $this->answer($store, $from, $messageBody, $customer, $product, $domain, $sample !== null);
+            $answer ??= $this->answer($store, $from, $messageBody, $query, $customer, $product, $domain, $sample !== null);
         } catch (Throwable $e) {
             // Nothing was delivered: the sample stays available.
             if ($sample) {
@@ -199,6 +210,7 @@ class ConversationPipeline
      */
     private function deliverSample(Store $store, string $from, string $messageBody, string $answer, ?string $domainKey, SampleDelivery $reservation, ?string $inboundWamid): void
     {
+        $answer = $this->withWelcome($answer);
         $sentWamid = WhatsAppService::sendMessage($from, $answer, $store);
 
         if ($sentWamid === null) {
@@ -262,8 +274,12 @@ class ConversationPipeline
      * The LLM answer for the product (its full service, or its free sample),
      * or null when its capability failed: then nothing of the protected
      * service is produced this turn.
+     *
+     * @param  string  $query  what the customer asked (see handle()); it differs from
+     *                         $messageBody when this message answered a question for
+     *                         their data, and then joins it in the knowledge search
      */
-    private function answer(Store $store, string $from, string $messageBody, $customer, ?Product $product, ?DomainModule $domain, bool $isSample): ?string
+    private function answer(Store $store, string $from, string $messageBody, string $query, $customer, ?Product $product, ?DomainModule $domain, bool $isSample): ?string
     {
         $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
         $capabilityKey = $isSample ? $product?->sample_capability_key : $product?->capability_key;
@@ -285,18 +301,26 @@ class ConversationPipeline
         }
 
         // A computed result that names its knowledge entries gets exactly
-        // those; otherwise knowledge is searched with the message, as before.
+        // those; otherwise knowledge is searched with the customer's query.
         $keyed = $computed !== null && $computed->knowledgeKeys !== [];
+        // The original query adds to this message (which may itself carry
+        // meaning, e.g. a question asked as a fact); it never replaces it.
+        $searchText = $query === $messageBody ? $messageBody : $query."\n".$messageBody;
+        $guided = ! $keyed && $domain instanceof ProvidesRetrievalGuide && trim($domain->retrievalGuide()) !== '';
         $fragments = match (true) {
             $domain === null => collect(),
             $keyed => $this->knowledge->retrieveByKeys($store, $domain->key(), $product, $computed->knowledgeKeys),
-            default => $this->knowledge->retrieve($store, $domain->key(), $product, $messageBody),
+            // The free sample of a guided topic rests on the sections its
+            // guide picks from the customer's data, never on whatever words
+            // of the message happen to match a title.
+            $guided && $isSample => collect(),
+            default => $this->knowledge->retrieve($store, $domain->key(), $product, $searchText),
         };
 
-        // The message alone found nothing (e.g. the customer only answered
-        // with their data): a domain with a retrieval guide picks the
-        // sections from the customer's data. Nothing is ever answered as if
-        // it rested on sources it does not have:
+        // A free sample, or a query that alone found nothing (e.g. the
+        // customer only answered with their data): a domain with a retrieval
+        // guide picks the sections from the customer's data and query.
+        // Nothing is ever answered as if it rested on sources it does not have:
         // - selection failed, or a free sample without sections: null (the
         //   sample is released, nothing changes, the customer can retry);
         // - a message that needs the sources but got none: a fixed reply
@@ -305,8 +329,8 @@ class ConversationPipeline
         //   normally, without fragments.
         $planned = false;
 
-        if (! $keyed && $fragments->isEmpty() && $domain instanceof ProvidesRetrievalGuide && trim($domain->retrievalGuide()) !== '') {
-            $plan = $this->planner->plan($store, $domain, $product, $messageBody, $facts, $isSample);
+        if ($guided && ($isSample || $fragments->isEmpty())) {
+            $plan = $this->planner->plan($store, $domain, $product, $searchText, $facts, $isSample);
             $planned = true;
 
             if ($plan->failed || ($isSample && $plan->fragments->isEmpty())) {
@@ -337,7 +361,7 @@ class ConversationPipeline
 
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
-            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $isSample ? $product->sample_instructions : null),
+            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $isSample ? $product->sample_instructions : null, $query !== $messageBody ? $query : null),
             $this->history($store, $from, $domain?->key()),
         );
 
@@ -351,22 +375,35 @@ class ConversationPipeline
             'capability_key' => $computed ? $capabilityKey : null,
             'knowledge_retrieval' => $keyed ? 'keys' : ($planned ? 'planned' : 'message'),
             'knowledge_chunk_ids' => $fragments->pluck('id')->all(),
+            'original_query' => $query !== $messageBody,
         ]);
 
         return $answer;
     }
 
-    private function replyBlocked(Store $store, string $from, string $messageBody, Product $product, AccessDecision $access): void
+    /**
+     * Without access: the deterministic commercial answer (subscription
+     * state, plans), preceded by the product's configured commercial
+     * resources when CommercialAdvisor finds some that fit the message.
+     */
+    private function replyBlocked(Store $store, string $from, string $messageBody, $customer, Product $product, ?DomainModule $domain, AccessDecision $access): void
     {
+        $commercial = $domain
+            ? $this->advisor->respond($store, $domain, $product, $access, $messageBody, $this->memory->visibleFacts($customer, $domain))
+            : null;
+
         Log::info('PIPELINE_ACCESS_DENIED', [
             'store_id' => $store->id,
             'customer_phone' => $from,
             'product_id' => $product->id,
             'reason' => $access->reason,
             'open_payment_status' => $access->openPayment?->status,
+            'commercial' => $commercial !== null,
         ]);
 
-        $this->reply($store, $from, $messageBody, $this->commerce->blockedReply($store, $product, $access), $product->domain_key);
+        $offer = $this->commerce->blockedReply($store, $product, $access);
+
+        $this->reply($store, $from, $messageBody, $commercial !== null ? $commercial."\n\n".$offer : $offer, $product->domain_key);
     }
 
     /**
@@ -441,6 +478,8 @@ class ConversationPipeline
      */
     private function reply(Store $store, string $from, string $messageBody, string $answer, ?string $domainKey = null): void
     {
+        $answer = $this->withWelcome($answer);
+
         WhatsAppMessage::create([
             'store_id' => $store->id,
             'customer_phone' => $from,
@@ -462,5 +501,34 @@ class ConversationPipeline
         if ($wamid) {
             WhatsAppStatusTracker::trackMessage($assistantMessage->id, $wamid);
         }
+    }
+
+    /**
+     * The store's welcome when this customer never wrote to it (no turn of
+     * theirs is stored yet), or null; it is then sent once, with the first
+     * reply. Without a configured welcome, nothing changes.
+     */
+    private function welcomeFor(Store $store, string $from): ?string
+    {
+        $welcome = trim((string) $store->welcome_message);
+
+        if ($welcome === '' || WhatsAppMessage::where('store_id', $store->id)->where('customer_phone', $from)->exists()) {
+            return null;
+        }
+
+        return $welcome;
+    }
+
+    /** The reply, preceded by the pending welcome the first time only. */
+    private function withWelcome(string $text): string
+    {
+        if ($this->welcome === null) {
+            return $text;
+        }
+
+        $text = $this->welcome."\n\n".$text;
+        $this->welcome = null;
+
+        return $text;
     }
 }

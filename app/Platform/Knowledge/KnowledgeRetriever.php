@@ -15,6 +15,10 @@ use Illuminate\Support\Str;
  * chunks of the domain (product_id null) plus those of the current product,
  * from active sources only. Never another store, domain or product.
  *
+ * Each call reads one purpose: the topic's knowledge (the default, for
+ * answers and samples) or the commercial resources (CommercialAdvisor).
+ * The two never mix.
+ *
  * Lexical scoring in PHP, accent- and case-insensitive and identical on
  * every database. Enough for small curated corpora; a database full-text
  * index can replace the candidate query when corpora grow.
@@ -37,7 +41,7 @@ class KnowledgeRetriever
     /**
      * @return Collection<int, KnowledgeChunk> most relevant first
      */
-    public function retrieve(Store $store, string $domainKey, ?Product $product, string $question, int $limit = 4): Collection
+    public function retrieve(Store $store, string $domainKey, ?Product $product, string $question, int $limit = 4, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE): Collection
     {
         $terms = $this->terms($question);
 
@@ -45,7 +49,7 @@ class KnowledgeRetriever
             return collect();
         }
 
-        return $this->scope($store, $domainKey, $product)
+        return $this->scope($store, $domainKey, $product, $purpose)
             ->orderBy('id')
             ->limit(self::MAX_CANDIDATES)
             ->get()
@@ -66,7 +70,7 @@ class KnowledgeRetriever
      * @param  list<string>  $keys
      * @return Collection<int, KnowledgeChunk>
      */
-    public function retrieveByKeys(Store $store, string $domainKey, ?Product $product, array $keys, int $limit = self::MAX_KEYED_FRAGMENTS): Collection
+    public function retrieveByKeys(Store $store, string $domainKey, ?Product $product, array $keys, int $limit = self::MAX_KEYED_FRAGMENTS, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE): Collection
     {
         $priority = [];
 
@@ -82,7 +86,7 @@ class KnowledgeRetriever
             return collect();
         }
 
-        return $this->scope($store, $domainKey, $product)
+        return $this->scope($store, $domainKey, $product, $purpose)
             ->whereNotNull('heading')
             ->get()
             ->filter(fn (KnowledgeChunk $chunk) => isset($priority[$this->normalizeHeading($chunk->heading)]))
@@ -102,9 +106,9 @@ class KnowledgeRetriever
      *
      * @return list<string>
      */
-    public function headings(Store $store, string $domainKey, ?Product $product, int $limit = 300): array
+    public function headings(Store $store, string $domainKey, ?Product $product, int $limit = 300, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE): array
     {
-        return $this->scope($store, $domainKey, $product)
+        return $this->scope($store, $domainKey, $product, $purpose)
             ->whereNotNull('heading')
             ->orderBy('id')
             ->pluck('heading')
@@ -116,15 +120,15 @@ class KnowledgeRetriever
 
     /**
      * This store and domain; domain-level chunks plus the current product's;
-     * active sources only.
+     * active sources of one purpose only.
      */
-    private function scope(Store $store, string $domainKey, ?Product $product): Builder
+    private function scope(Store $store, string $domainKey, ?Product $product, string $purpose): Builder
     {
         return KnowledgeChunk::query()
             ->where('store_id', $store->id)
             ->where('domain_key', $domainKey)
             ->where(fn ($query) => $query->whereNull('product_id')->when($product, fn ($q) => $q->orWhere('product_id', $product->id)))
-            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE));
+            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE)->where('purpose', $purpose));
     }
 
     private function normalizeHeading(string $heading): string

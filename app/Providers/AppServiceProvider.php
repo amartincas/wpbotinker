@@ -12,9 +12,11 @@ use Illuminate\Validation\Rules\Password;
 use Livewire\Livewire;
 use App\Services\AI\GeminiService;
 use App\Models\Lead;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Topic;
 use App\Observers\LeadObserver;
+use App\Observers\PaymentObserver;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Memory\PersonFacts;
 
@@ -56,6 +58,9 @@ class AppServiceProvider extends ServiceProvider
 
         // Sends every new Lead (bot, manual, backfill) to Meta's Conversions API
         Lead::observe(LeadObserver::class);
+
+        // A confirmed subscription payment becomes one Lead (knowledge mode)
+        Payment::observe(PaymentObserver::class);
 
         // A domain product may only require facts its domain declares and use
         // its own domain's capabilities (main and sample), from any write

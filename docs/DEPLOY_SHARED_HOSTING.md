@@ -54,6 +54,8 @@ El hosting no mantiene procesos vivos. El scheduler (`routes/console.php`) ejecu
 - Si el hosting solo permite cron cada 5 minutos, la latencia sube a ~5 minutos. Funciona, pero se nota.
 - Fallback si no hay cron (no recomendado): `QUEUE_CONNECTION=sync`. El mensaje se procesa dentro del webhook; si tarda más de unos 20 s, Meta reintenta. Los reintentos se descartan por id de mensaje durante 10 minutos.
 - Diagnóstico: `php artisan queue:failed` y la tabla `jobs`.
+- Leads de pagos confirmados (`RecordPaymentLead`): se crean en la cola, hasta un minuto después de la confirmación, y se reintentan solos 5 veces (1 min, 5 min, 15 min y 1 h). Si se agotan, quedan en `failed_jobs` y en el log como `PAYMENT_LEAD_NOT_RECORDED`. Para reintentarlo después de corregir la causa: `php artisan queue:retry <uuid>`. Es seguro: nunca crea un segundo Lead para el mismo pago.
+- Con `QUEUE_CONNECTION=sync` no hay reintentos: un Lead que falla queda solo en el log (`PAYMENT_LEAD_NOT_RECORDED`).
 
 ## 5. Despliegue seguro
 

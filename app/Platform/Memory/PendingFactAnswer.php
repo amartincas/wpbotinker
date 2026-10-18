@@ -13,6 +13,8 @@ final class PendingFactAnswer
         public readonly ?string $rejectionReason,
         public readonly ?string $reply,
         public readonly ?string $replyDomainKey,
+        /** The customer's message that led to the question (see FactCollector::require()). */
+        public readonly ?string $originMessage = null,
     ) {}
 
     /** No pending question of FactCollector: resolve the message normally. */
@@ -22,9 +24,9 @@ final class PendingFactAnswer
     }
 
     /** The pending question was answered: continue with that product. */
-    public static function answered(int $productId): self
+    public static function answered(int $productId, ?string $originMessage = null): self
     {
-        return new self($productId, null, null, null, null);
+        return new self($productId, null, null, null, null, $originMessage);
     }
 
     /**
@@ -32,9 +34,9 @@ final class PendingFactAnswer
      * may have changed topic); if it stays on the same product, the
      * question is asked again with the reason.
      */
-    public static function rejected(int $productId, string $reason): self
+    public static function rejected(int $productId, string $reason, ?string $originMessage = null): self
     {
-        return new self(null, $productId, $reason, null, null);
+        return new self(null, $productId, $reason, null, null, $originMessage);
     }
 
     /** Send this text and stop (e.g. permission declined). */
@@ -46,5 +48,14 @@ final class PendingFactAnswer
     public function rejectionFor(int $productId): ?string
     {
         return $this->rejectedProductId === $productId ? $this->rejectionReason : null;
+    }
+
+    /**
+     * The customer's original query while the conversation stays on the
+     * product whose question this message answered (or failed to answer).
+     */
+    public function originFor(int $productId): ?string
+    {
+        return in_array($productId, [$this->answeredProductId, $this->rejectedProductId], true) ? $this->originMessage : null;
     }
 }
