@@ -11,6 +11,7 @@ use App\Platform\Contracts\DomainModule;
 use App\Platform\Conversation\PromptAssembler;
 use App\Platform\Knowledge\KnowledgePlanner;
 use App\Platform\Knowledge\KnowledgeRetriever;
+use App\Platform\Memory\PersonFacts;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -22,7 +23,10 @@ use Throwable;
  * and deterministic limits; the selling itself is configuration.
  *
  * - Opt-in: without commercial instructions or commercial sources, nothing
- *   changes (no extra AI call).
+ *   changes (no extra AI call); every such exit is logged with its reason
+ *   (COMMERCIAL_NOT_USED: store, product and reason only).
+ * - Only the customer's non-sensitive facts reach it: it explains the
+ *   service, it never applies it to the customer's case.
  * - Never with access or with an open payment, and never for prices,
  *   payments or payment status: CommerceResponder answered those first.
  * - "verbatim" resources are sent exactly as written, unless they state a
@@ -43,6 +47,7 @@ class CommercialAdvisor
         private readonly KnowledgePlanner $planner,
         private readonly PromptAssembler $prompts,
         private readonly CommercialClaims $claims,
+        private readonly PersonFacts $personFacts,
     ) {}
 
     /**
@@ -51,13 +56,30 @@ class CommercialAdvisor
      */
     public function respond(Store $store, DomainModule $domain, Product $product, AccessDecision $access, string $message, array $facts): ?string
     {
-        if ($access->allowed || $access->openPayment !== null || ! $product->requiresSubscription() || trim((string) $product->commercial_instructions) === '') {
+        $notApplicable = match (true) {
+            $access->allowed => 'has_access',
+            $access->openPayment !== null => 'open_payment',
+            ! $product->requiresSubscription() => 'not_subscription',
+            trim((string) $product->commercial_instructions) === '' => 'no_instructions',
+            default => null,
+        };
+
+        if ($notApplicable !== null) {
+            Log::info('COMMERCIAL_NOT_USED', ['store_id' => $store->id, 'product_id' => $product->id, 'reason' => $notApplicable]);
+
             return null;
         }
 
         if ($this->retriever->headings($store, $domain->key(), $product, purpose: KnowledgeSource::PURPOSE_COMMERCIAL) === []) {
+            Log::info('COMMERCIAL_NOT_USED', ['store_id' => $store->id, 'product_id' => $product->id, 'reason' => 'no_resources']);
+
             return null;
         }
+
+        // Selling never reads what the service needs: sensitive facts (and
+        // any fact the topic does not define) stay out of the selector and
+        // of the wording, so the reply cannot become the service itself.
+        $facts = $this->shareableFacts($domain, $facts);
 
         $plan = $this->planner->planCommercial($store, $domain, $product, $message, $facts);
 
@@ -121,5 +143,28 @@ class CommercialAdvisor
         ]);
 
         return implode("\n\n", $parts);
+    }
+
+    /**
+     * The facts a commercial reply may read: those the topic defines and
+     * marks as not sensitive (person facts by the Core catalog, the topic's
+     * own facts by their definition). Anything else is left out.
+     *
+     * @param  array<string, mixed>  $facts
+     * @return array<string, mixed>
+     */
+    private function shareableFacts(DomainModule $domain, array $facts): array
+    {
+        $definitions = collect($domain->facts())->keyBy('key');
+
+        return array_filter($facts, function (string $key) use ($definitions) {
+            $fact = $definitions->get($key);
+
+            if ($fact === null) {
+                return false;
+            }
+
+            return ! ($fact->isPerson() ? $this->personFacts->isSensitive($key) : (bool) $fact->sensitive);
+        }, ARRAY_FILTER_USE_KEY);
     }
 }

@@ -131,13 +131,33 @@ class CommerceResponder
             return $this->openPaymentText($store, $product, $payment);
         }
 
-        $intro = match ($access->reason) {
+        return $this->accessStateLine($product, $access, withoutSubscription: true).$this->offerText($product);
+    }
+
+    /**
+     * The offer that follows a commercial reply (CommercialAdvisor) to a
+     * customer without access: the plans, preceded only by a state the
+     * customer should know (an expired or revoked subscription). "You need
+     * a subscription" would just repeat what the reply already explained.
+     * With an open payment it is exactly blockedReply().
+     */
+    public function offerAfterCommercialReply(Store $store, Product $product, AccessDecision $access): string
+    {
+        if ($access->openPayment !== null) {
+            return $this->blockedReply($store, $product, $access);
+        }
+
+        return $this->accessStateLine($product, $access, withoutSubscription: false).$this->offerText($product);
+    }
+
+    /** Why the customer has no access, as the line before the offer ('' when not worth saying). */
+    private function accessStateLine(Product $product, AccessDecision $access, bool $withoutSubscription): string
+    {
+        return match ($access->reason) {
             AccessDecision::EXPIRED => "Tu suscripción a «{$product->name}» venció el {$access->subscription->expires_at->format('d/m/Y')}. Para seguir usándolo, renuévala.\n\n",
             AccessDecision::REVOKED => "Tu acceso a «{$product->name}» no está activo.\n\n",
-            default => "Para usar «{$product->name}» necesitas una suscripción.\n\n",
+            default => $withoutSubscription ? "Para usar «{$product->name}» necesitas una suscripción.\n\n" : '',
         };
-
-        return $intro.$this->offerText($product);
     }
 
     /** The offer that follows a delivered free sample. */

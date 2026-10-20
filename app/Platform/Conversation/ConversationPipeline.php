@@ -401,7 +401,9 @@ class ConversationPipeline
             'commercial' => $commercial !== null,
         ]);
 
-        $offer = $this->commerce->blockedReply($store, $product, $access);
+        $offer = $commercial !== null
+            ? $this->commerce->offerAfterCommercialReply($store, $product, $access)
+            : $this->commerce->blockedReply($store, $product, $access);
 
         $this->reply($store, $from, $messageBody, $commercial !== null ? $commercial."\n\n".$offer : $offer, $product->domain_key);
     }

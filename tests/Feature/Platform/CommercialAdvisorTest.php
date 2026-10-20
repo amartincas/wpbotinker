@@ -24,7 +24,11 @@ use App\Models\Subscription;
 use App\Models\Topic;
 use App\Models\User;
 use App\Models\WhatsAppMessage;
+use App\Platform\Commerce\AccessGate;
+use App\Platform\Commerce\CommerceResponder;
+use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\CommercialClaims;
+use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeIngestor;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\CustomerMemory;
@@ -165,16 +169,23 @@ function caSelectionInput(): string
     return collect(end($calls)->data()['messages'])->last()['content'];
 }
 
+/** The deterministic reply without access, when no commercial reply was given. */
 function caOffer(string $product): string
 {
-    return "Para usar «{$product}» necesitas una suscripción.\n\nPlanes de «{$product}»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.";
+    return "Para usar «{$product}» necesitas una suscripción.\n\n".caPlans($product);
+}
+
+/** The plans that follow a commercial reply: no "you need a subscription" line. */
+function caPlans(string $product): string
+{
+    return "Planes de «{$product}»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.";
 }
 
 describe('commercial reply for a customer without access', function () {
     it('answers an objection with the selected resource, followed by the deterministic offer', function () {
         caJob($this->store, 'No estoy seguro de la Lectura Astral, ¿por qué debería tomarla?');
 
-        expect(caLastText())->toBe("Respuesta comercial redactada.\n\n".caOffer('Lectura Astral'))
+        expect(caLastText())->toBe("Respuesta comercial redactada.\n\n".caPlans('Lectura Astral'))
             ->and(caSelectionInput())
             ->toContain("GUÍA COMERCIAL DEL PRODUCTO:\nCOMERCIAL-ASTRO-A")
             ->toContain('- Objeción: precio')->toContain('- Testimonio de Laura')->toContain('- Garantía')
@@ -192,7 +203,7 @@ describe('commercial reply for a customer without access', function () {
 
         caJob($this->store, '¿Alguien ha probado la Lectura Astral?');
 
-        expect(caLastText())->toBe("TESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caOffer('Lectura Astral'))
+        expect(caLastText())->toBe("TESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caPlans('Lectura Astral'))
             ->and(caCommercialPrompts())->toBe([]);
     });
 
@@ -201,7 +212,7 @@ describe('commercial reply for a customer without access', function () {
 
         caJob($this->store, '¿Y si la Lectura Astral no me sirve?');
 
-        expect(caLastText())->toBe("Respuesta comercial redactada.\n\nTESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caOffer('Lectura Astral'))
+        expect(caLastText())->toBe("Respuesta comercial redactada.\n\nTESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caPlans('Lectura Astral'))
             ->and(caCommercialPrompts()[0])->toContain('GARANTIA-TEMA')->not->toContain('TESTIMONIO-A');
     });
 
@@ -213,7 +224,7 @@ describe('commercial reply for a customer without access', function () {
         expect(caSelectionInput())->toContain('COMERCIAL-ASTRO-B')->toContain('- Beneficio de la carta')->toContain('- Garantía')
             ->not->toContain('Objeción: precio')->not->toContain('Testimonio de Laura')
             ->and(caCommercialPrompts()[0])->toContain('BENEFICIO-B')->not->toContain('OBJECION-A')
-            ->and(caLastText())->toEndWith(caOffer('Carta Natal'));
+            ->and(caLastText())->toEndWith(caPlans('Carta Natal'));
     });
 
     it('works the same for another topic, with its own resources and instructions', function () {
@@ -224,7 +235,7 @@ describe('commercial reply for a customer without access', function () {
         expect(caSelectionInput())->toContain('COMERCIAL-NUTRI')->toContain('- Objeción de tiempo')
             ->not->toContain('Garantía')->not->toContain('Objeción: precio')
             ->and(caCommercialPrompts()[0])->toContain('OBJECION-NUTRI')->toContain('Nutrición')->not->toContain('GARANTIA-TEMA')
-            ->and(caLastText())->toBe("Respuesta comercial redactada.\n\n".caOffer('Asesoría Nutricional'));
+            ->and(caLastText())->toBe("Respuesta comercial redactada.\n\n".caPlans('Asesoría Nutricional'));
     });
 
     it('never offers another store\'s resources', function () {
@@ -287,7 +298,7 @@ describe('commercial reply for a customer without access', function () {
 
         caJob($this->store, 'No estoy seguro de la Lectura Astral');
 
-        expect(caLastText())->toBe($this->fake['worded']."\n\n".caOffer('Lectura Astral'));
+        expect(caLastText())->toBe($this->fake['worded']."\n\n".caPlans('Lectura Astral'));
     });
 
     it('keeps the current reply when the AI cannot word it', function () {
@@ -500,6 +511,10 @@ describe('commercial claims', function () {
         ['Te damos acceso hoy.', 'access'],
         ['La mensualidad es baja.', 'price_term'],
         ['Vale la pena: el valor de conocerte, con un plan de comidas para tu estado de ánimo.', null],
+        // A future access describes the service; only access granted now is a claim.
+        ['Con la suscripción tendrás acceso a la lectura completa.', null],
+        ['Ya tienes acceso a la lectura completa.', 'access'],
+        ['Tu suscripción ya está activa.', 'access'],
     ]);
 });
 
@@ -517,7 +532,7 @@ describe('verbatim resources that state prices', function () {
         caJob($this->store, '¿Alguien ha probado la Lectura Astral?');
 
         $skipped = collect($this->contexts)->firstWhere(0, 'COMMERCIAL_VERBATIM_SKIPPED');
-        expect(caLastText())->toBe("TESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caOffer('Lectura Astral'))
+        expect(caLastText())->toBe("TESTIMONIO-A: «Me ayudó mucho.» — Laura\n\n".caPlans('Lectura Astral'))
             ->and($skipped[1])->toHaveKeys(['store_id', 'product_id', 'knowledge_chunk_id', 'reason'])
             ->and(json_encode($skipped[1]))->not->toContain('TESTIMONIO-CARO');
     });
@@ -632,4 +647,135 @@ describe('Filament validation of verbatim resources', function () {
 
         expect(KnowledgeSource::whereIn('origin', ['upload:t.md', 'upload:r.md', 'upload:k.md'])->count())->toBe(3);
     });
+});
+
+describe('K1 — the commercial reply never reads sensitive facts', function () {
+    beforeEach(function () {
+        Topic::where('store_id', $this->store->id)->where('key', 'astrologia')->update(['facts' => [
+            ['scope' => 'person', 'key' => 'name'],
+            ['scope' => 'person', 'key' => 'birth_date'],
+            ['scope' => 'domain', 'key' => 'objetivo', 'type' => 'text', 'question' => '¿Qué buscas?', 'label' => 'objetivo'],
+            ['scope' => 'domain', 'key' => 'secreto', 'type' => 'text', 'question' => '¿Algo privado?', 'label' => 'secreto', 'sensitive' => true],
+        ]]);
+        $this->customer = app(CustomerMemory::class)->customerFor($this->store, CA_PHONE);
+        $memory = app(CustomerMemory::class);
+        $memory->record($this->customer, 'astrologia', FactDefinition::person('name'), 'Ana', CustomerFact::SOURCE_CUSTOMER_ANSWER);
+        $memory->record($this->customer, 'astrologia', FactDefinition::person('birth_date'), '1990-03-15', CustomerFact::SOURCE_CUSTOMER_ANSWER);
+        $memory->record($this->customer, 'astrologia', FactDefinition::domain('objetivo', '¿Qué buscas?'), 'OBJETIVO-ABIERTO', CustomerFact::SOURCE_CUSTOMER_ANSWER);
+        $memory->record($this->customer, 'astrologia', FactDefinition::domain('secreto', '¿Algo privado?', true), 'SECRETO-PRIVADO', CustomerFact::SOURCE_CUSTOMER_ANSWER);
+    });
+
+    it('keeps sensitive facts out of the selector and the wording, and keeps the rest', function () {
+        caJob($this->store, 'No estoy seguro de la Lectura Astral');
+
+        $selection = caSelectionInput();
+        $prompt = caCommercialPrompts()[0];
+
+        expect($selection)->toContain(': Ana')->toContain('OBJETIVO-ABIERTO')->not->toContain('1990-03-15')->not->toContain('SECRETO-PRIVADO')
+            ->and($prompt)->toContain(': Ana')->toContain('OBJETIVO-ABIERTO')->not->toContain('1990-03-15')->not->toContain('SECRETO-PRIVADO');
+    });
+
+    it('leaves out facts the topic does not define', function () {
+        $access = app(AccessGate::class)->decide($this->customer, $this->lectura);
+        $domain = app(DomainRegistry::class)->get('astrologia', $this->store->id);
+
+        app(CommercialAdvisor::class)->respond($this->store, $domain, $this->lectura, $access, 'No estoy seguro de la Lectura Astral', [
+            'name' => 'Ana', 'sin_definicion' => 'DATO-SIN-DEFINICION',
+        ]);
+
+        expect(caCommercialPrompts()[0])->toContain(': Ana')->not->toContain('DATO-SIN-DEFINICION');
+    });
+
+    it('keeps every fact for the paid service', function () {
+        Subscription::create(['customer_id' => $this->customer->id, 'product_id' => $this->lectura->id, 'started_at' => now(), 'expires_at' => now()->addDays(30)]);
+
+        caJob($this->store, 'Lectura Astral: dime algo');
+
+        $service = Http::recorded(fn (Request $r) => str_starts_with($r->url(), 'https://api.openai.com/') && str_contains($r->data()['messages'][0]['content'], 'SERVICIO-COMPLETO'))
+            ->map(fn ($p) => $p[0]->data()['messages'][0]['content'])->first();
+
+        expect($service)->toContain('1990-03-15')->toContain('SECRETO-PRIVADO')->toContain(': Ana')
+            ->and(caCommercialSelections())->toBe([]);
+    });
+
+    it('keeps every fact for the free sample', function () {
+        $this->lectura->update(['sample_instructions' => 'MUESTRA-ASTRO']);
+
+        caJob($this->store, 'Quiero mi Lectura Astral');
+
+        $sample = Http::recorded(fn (Request $r) => str_starts_with($r->url(), 'https://api.openai.com/') && str_contains($r->data()['messages'][0]['content'], 'MUESTRA-ASTRO'))
+            ->map(fn ($p) => $p[0]->data()['messages'][0]['content'])->first();
+
+        expect($sample)->toContain('1990-03-15')->toContain('SECRETO-PRIVADO');
+    });
+
+    it('changes nothing in memory and asks for nothing again', function () {
+        $this->lectura->update(['required_facts' => ['birth_date']]);
+        $before = CustomerFact::where('customer_id', $this->customer->id)->count();
+
+        caJob($this->store, 'No estoy seguro de la Lectura Astral');
+
+        expect(CustomerFact::where('customer_id', $this->customer->id)->count())->toBe($before)
+            ->and(app(CustomerMemory::class)->personValue($this->customer, 'birth_date'))->toBe('1990-03-15')
+            ->and(caLastText())->not->toContain('fecha de nacimiento')
+            ->and(caLastText())->toStartWith('Respuesta comercial redactada.');
+    });
+
+    it('tells the AI, generically, not to apply the service to the customer case', function () {
+        caJob($this->store, 'No estoy seguro de la Lectura Astral');
+
+        expect(caCommercialPrompts()[0])->toContain('No apliques el servicio al caso del cliente');
+    });
+});
+
+describe('K2 — the offer after a commercial reply', function () {
+    it('keeps the revoked state line before the plans', function () {
+        $customer = app(CustomerMemory::class)->customerFor($this->store, CA_PHONE);
+        Subscription::create(['customer_id' => $customer->id, 'product_id' => $this->lectura->id, 'started_at' => now()->subDays(5), 'expires_at' => now()->addDays(25), 'status' => Subscription::STATUS_REVOKED]);
+
+        caJob($this->store, 'No estoy seguro de la Lectura Astral');
+
+        expect(caLastText())->toBe("Respuesta comercial redactada.\n\nTu acceso a «Lectura Astral» no está activo.\n\n".caPlans('Lectura Astral'));
+    });
+
+    it('keeps the expired state line before the plans', function () {
+        $customer = app(CustomerMemory::class)->customerFor($this->store, CA_PHONE);
+        $subscription = Subscription::create(['customer_id' => $customer->id, 'product_id' => $this->lectura->id, 'started_at' => now()->subDays(40), 'expires_at' => now()->subDays(10)]);
+
+        caJob($this->store, 'No estoy seguro de volver a la Lectura Astral');
+
+        expect(caLastText())->toBe("Respuesta comercial redactada.\n\nTu suscripción a «Lectura Astral» venció el {$subscription->expires_at->format('d/m/Y')}. Para seguir usándolo, renuévala.\n\n".caPlans('Lectura Astral'));
+    });
+
+    it('is exactly the blocked reply while a payment is open', function () {
+        $customer = app(CustomerMemory::class)->customerFor($this->store, CA_PHONE);
+        Payment::start($customer, Plan::where('product_id', $this->lectura->id)->first(), now()->addHours(48));
+        $access = app(AccessGate::class)->decide($customer, $this->lectura);
+        $commerce = app(CommerceResponder::class);
+
+        expect($commerce->offerAfterCommercialReply($this->store, $this->lectura, $access))
+            ->toBe($commerce->blockedReply($this->store, $this->lectura, $access));
+    });
+});
+
+describe('K4 — every exit of the commercial advisor is logged with its reason', function () {
+    beforeEach(function () {
+        $this->contexts = [];
+        Event::listen(MessageLogged::class, fn (MessageLogged $event) => $this->contexts[] = [$event->message, $event->context]);
+    });
+
+    it('logs why it did not apply, with store, product and reason only', function (Closure $arrange, string $reason) {
+        $arrange($this);
+
+        caJob($this->store, 'No estoy seguro de la Asesoría Nutricional');
+
+        $logged = collect($this->contexts)->where(0, 'COMMERCIAL_NOT_USED')->pluck(1)->values();
+        expect($logged)->toHaveCount(1)
+            ->and($logged[0])->toBe(['store_id' => $this->store->id, 'product_id' => $this->asesoria->id, 'reason' => $reason])
+            ->and(caCommercialSelections())->toBe([]);
+    })->with([
+        'no instructions' => [fn ($test) => $test->asesoria->update(['commercial_instructions' => null]), 'no_instructions'],
+        'no resources' => [fn ($test) => KnowledgeSource::where('domain_key', 'nutricion')->update(['status' => KnowledgeSource::STATUS_RETIRED]), 'no_resources'],
+        'open payment' => [fn ($test) => Payment::start(app(CustomerMemory::class)->customerFor($test->store, CA_PHONE), Plan::where('product_id', $test->asesoria->id)->first(), now()->addHours(48)), 'open_payment'],
+    ]);
 });

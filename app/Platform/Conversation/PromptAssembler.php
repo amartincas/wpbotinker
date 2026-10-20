@@ -39,6 +39,7 @@ class PromptAssembler
      */
     private const COMMERCIAL_RULES = "### REGLAS DE LA RESPUESTA COMERCIAL\n"
         .'El cliente aún no tiene acceso al servicio: no lo entregues ni lo anticipes.'
+        ."\n- No apliques el servicio al caso del cliente: no interpretes sus datos ni lo que cuente en su mensaje para darle un resultado personalizado. Explica qué incluye el servicio y responde sus dudas sobre él."
         ."\n- Toda afirmación sobre el producto (beneficios, diferencias, bonos, testimonios, garantías o condiciones) debe estar en el MATERIAL COMERCIAL; si no está, no la hagas."
         ."\n- No menciones precios, planes, descuentos, medios ni condiciones de pago: el sistema agrega la oferta después de tu respuesta.";
 

@@ -35,7 +35,8 @@ final class CommercialClaims
     private const CLAIM_PATTERNS = [
         'free' => '/\bgratis\b|\bgratuit(?:[oa]s?|amente)\b|\bsin\s+(?:costo|cargo|pagar)\b|\bno\s+(?:cuesta|tiene\s+costo)\b/iu',
         'discount' => '/\bdescuentos?\b|\bpromoci[oó]n(?:es)?\b|\bpromos?\b|\brebajas?\b|\bcup[oó]n(?:es)?\b/iu',
-        'access' => '/\b(?:ya\s+)?(?:tienes|tendr[aá]s|obtienes|te\s+(?:doy|damos|activo|activamos|habilito|habilitamos|concedo|concedemos|regalo|regalamos|dejo))\s+(?:(?:el|tu|un)\s+)?acceso\b'
+        // Access granted now, never a future one ("tendrás acceso" describes the service).
+        'access' => '/\b(?:ya\s+)?(?:tienes|obtienes|te\s+(?:doy|damos|activo|activamos|habilito|habilitamos|concedo|concedemos|regalo|regalamos|dejo))\s+(?:(?:el|tu|un)\s+)?acceso\b'
             .'|\b(?:tu\s+)?(?:acceso|suscripci[oó]n|cuenta)\s+(?:ya\s+)?(?:est[aá]|queda|qued[oó])\s+(?:activ|habilitad|list)/iu',
     ];
 
