@@ -167,13 +167,53 @@ it('grounds the paid service the same way', function () {
         ->and(kpAnswerPrompts()[0])->toContain('PISCIS-TEXTO')->toContain('SERVICIO-COMPLETO')->not->toContain('MUESTRA GRATUITA');
 });
 
-it('makes no extra call when the message already finds knowledge', function () {
+it('follows the guide in the paid service even when words of the message match other sections', function () {
+    kpSubscribe(kpBirthDate($this->store), $this->product);
+    $this->fake['plan'] = '{"needs_knowledge": true, "sections": ["Piscis en el amor"]}';
+
+    kpJob($this->store, '¿Cómo me va en el amor? Aries me tiene loca'); // "Aries" matches a title of another sign
+
+    $prompt = kpAnswerPrompts()[0];
+    expect(kpPlannerCalls())->toHaveCount(1)
+        ->and($prompt)->toContain('PISCIS-AMOR')->not->toContain('ARIES-TEXTO')
+        ->and($this->logged)->toContain('PIPELINE_ANSWERED');
+});
+
+it('answers the paid service with the sections the message found when the selection fails', function (Closure $break) {
+    $break->call($this);
     kpSubscribe(kpBirthDate($this->store), $this->product);
 
     kpJob($this->store, '¿Cómo es Piscis en el amor?');
 
-    expect(kpPlannerCalls())->toBe([])
-        ->and(kpAnswerPrompts()[0])->toContain('PISCIS-AMOR');
+    expect(kpAnswerPrompts())->toHaveCount(1)
+        ->and(kpAnswerPrompts()[0])->toContain('PISCIS-AMOR')
+        ->and(kpLastText())->toBe('Respuesta generada.')
+        ->and($this->logged)->toContain('KNOWLEDGE_PLAN_FAILED')->toContain('PIPELINE_KNOWLEDGE_FALLBACK')
+        ->not->toContain('PIPELINE_KNOWLEDGE_UNAVAILABLE');
+})->with([
+    'provider error' => [fn () => $this->fake['plan_status'] = 500],
+    'invalid answer' => [fn () => $this->fake['plan'] = 'Piscis, claramente'],
+]);
+
+it('never grounds the free sample on the sections the message found when the selection fails', function () {
+    $this->fake['plan_status'] = 500;
+    kpBirthDate($this->store);
+
+    kpJob($this->store, 'Quiero mi Lectura Astral, ¿cómo es Piscis en el amor?');
+
+    expect(SampleDelivery::count())->toBe(0)
+        ->and(kpAnswerPrompts())->toBe([])
+        ->and($this->logged)->not->toContain('PIPELINE_KNOWLEDGE_FALLBACK');
+});
+
+it('says it found nothing in the paid service when the guide picks no section, even if words matched a title', function () {
+    kpSubscribe(kpBirthDate($this->store), $this->product);
+    $this->fake['plan'] = '{"needs_knowledge": true, "sections": []}';
+
+    kpJob($this->store, '¿Aries me va a pagar lo que me debe?');
+
+    expect(kpAnswerPrompts())->toBe([])
+        ->and(kpLastText())->toStartWith('No encontré información sobre eso en las fuentes de «Astrología».');
 });
 
 it('keeps the previous behaviour for a topic without a guide', function () {

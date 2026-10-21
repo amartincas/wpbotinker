@@ -317,23 +317,33 @@ class ConversationPipeline
             default => $this->knowledge->retrieve($store, $domain->key(), $product, $searchText),
         };
 
-        // A free sample, or a query that alone found nothing (e.g. the
-        // customer only answered with their data): a domain with a retrieval
-        // guide picks the sections from the customer's data and query.
+        // A domain with a retrieval guide picks the sections from the
+        // customer's data and query, for the free sample and the service
+        // alike: words of the message matching a title (another entity, a
+        // neighbouring area) never override the guide.
         // Nothing is ever answered as if it rested on sources it does not have:
-        // - selection failed, or a free sample without sections: null (the
-        //   sample is released, nothing changes, the customer can retry);
+        // - selection failed: the service falls back to the sections the
+        //   message found, if any, so a customer with access still gets an
+        //   answer; otherwise, and always for the sample, null (the sample is
+        //   released, nothing changes, the customer can retry);
+        // - a free sample without sections: null, as above;
         // - a message that needs the sources but got none: a fixed reply
         //   saying so, without the LLM;
         // - a message that needs no sources (thanks, a greeting): answered
         //   normally, without fragments.
         $planned = false;
 
-        if ($guided && ($isSample || $fragments->isEmpty())) {
+        if ($guided) {
             $plan = $this->planner->plan($store, $domain, $product, $searchText, $facts, $isSample);
-            $planned = true;
 
-            if ($plan->failed || ($isSample && $plan->fragments->isEmpty())) {
+            if ($plan->failed && ! $isSample && $fragments->isNotEmpty()) {
+                Log::warning('PIPELINE_KNOWLEDGE_FALLBACK', [
+                    'store_id' => $store->id,
+                    'domain_key' => $domain->key(),
+                    'product_id' => $product?->id,
+                    'plan_status' => $plan->status,
+                ]);
+            } elseif ($plan->failed || ($isSample && $plan->fragments->isEmpty())) {
                 Log::warning('PIPELINE_KNOWLEDGE_UNAVAILABLE', [
                     'store_id' => $store->id,
                     'domain_key' => $domain->key(),
@@ -343,9 +353,7 @@ class ConversationPipeline
                 ]);
 
                 return null;
-            }
-
-            if ($plan->unsupported()) {
+            } elseif ($plan->unsupported()) {
                 Log::info('PIPELINE_KNOWLEDGE_NOT_FOUND', [
                     'store_id' => $store->id,
                     'domain_key' => $domain->key(),
@@ -354,9 +362,10 @@ class ConversationPipeline
                 ]);
 
                 return "No encontré información sobre eso en las fuentes de «{$domain->label()}». ¿Puedes contarme un poco más o preguntarlo de otra forma?";
+            } else {
+                $fragments = $plan->fragments;
+                $planned = true;
             }
-
-            $fragments = $plan->fragments;
         }
 
         $answer = AIServiceFactory::make($store)->getResponse(

@@ -257,14 +257,16 @@ describe('free sample grounded in the topic guide', function () {
             ->and(SampleDelivery::count())->toBe(1);
     });
 
-    it('keeps the lexical search for the paid service', function () {
+    it('lets the guide choose the sections of the paid service too', function () {
         cxBirthDate($this->store);
         Subscription::create(['customer_id' => app(CustomerMemory::class)->customerFor($this->store, CX_CUSTOMER)->id, 'product_id' => $this->astro->id, 'started_at' => now(), 'expires_at' => now()->addDays(30)]);
+        // A guide that honours an express question about another entity.
+        $this->fake['plan'] = '{"needs_knowledge": true, "sections": ["Aries"]}';
 
         cxJob($this->store, '¿Cómo es Aries?');
 
-        expect(cxPlannerInputs())->toBe([])
-            ->and(cxAnswerPrompts()[0])->toContain('ARIES-TEXTO')->toContain('SERVICIO-ASTRO');
+        expect(cxPlannerInputs())->toHaveCount(1)
+            ->and(cxAnswerPrompts()[0])->toContain('ARIES-TEXTO')->toContain('SERVICIO-ASTRO')->not->toContain('PISCIS-TEXTO');
     });
 
     it('grounds each topic\'s sample in its own sources, guide and customer data', function () {
