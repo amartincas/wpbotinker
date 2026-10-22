@@ -56,6 +56,12 @@ class ConversationPipeline
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
 
+    /**
+     * Set by answer() when a free sample found no section of its topic for
+     * the query (not a failure): the sources do not cover it.
+     */
+    private bool $uncovered = false;
+
     public function __construct(
         private readonly ProductResolver $resolver,
         private readonly DomainRegistry $domains,
@@ -69,6 +75,7 @@ class ConversationPipeline
         private readonly CommerceResponder $commerce,
         private readonly KnowledgePlanner $planner,
         private readonly CommercialAdvisor $advisor,
+        private readonly TopicClassifier $topics,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -79,6 +86,7 @@ class ConversationPipeline
         );
         $customer = $this->memory->customerFor($store, $from);
         $this->welcome = $this->welcomeFor($store, $from);
+        $this->uncovered = false;
 
         $pending = $this->facts->answerPending($conversation, $customer, $messageBody, $wamid);
 
@@ -103,6 +111,16 @@ class ConversationPipeline
 
         if ($product === null) {
             $resolution = $this->resolver->resolve($store, $conversation, $messageBody, $adProductId);
+
+            // Nothing pointed to a product: a store that configured its open
+            // question asks (or identifies the topic) instead of listing the catalog.
+            if ($resolution->unidentified && filled($store->topic_prompt_message)) {
+                $resolution = $this->identifyTopic($store, $from, $messageBody, $catalog);
+
+                if ($resolution === null) {
+                    return;
+                }
+            }
 
             if ($resolution->needsClarification()) {
                 $conversation->update(['pending_state' => [
@@ -182,7 +200,13 @@ class ConversationPipeline
                 $this->samples->release($sample);
             }
 
-            $this->reply($store, $from, $messageBody, "No pude completar tu solicitud sobre «{$product->name}» en este momento. Intenta de nuevo en unos minutos.", $domain?->key());
+            // The sources do not cover the query: say so (the sample stays
+            // available). Anything else failed: the customer may retry.
+            $text = $this->uncovered && filled($store->topic_unavailable_message)
+                ? trim($store->topic_unavailable_message)
+                : "No pude completar tu solicitud sobre «{$product->name}» en este momento. Intenta de nuevo en unos minutos.";
+
+            $this->reply($store, $from, $messageBody, $text, $domain?->key());
 
             return;
         }
@@ -344,6 +368,8 @@ class ConversationPipeline
                     'plan_status' => $plan->status,
                 ]);
             } elseif ($plan->failed || ($isSample && $plan->fragments->isEmpty())) {
+                $this->uncovered = $isSample && $plan->unsupported();
+
                 Log::warning('PIPELINE_KNOWLEDGE_UNAVAILABLE', [
                     'store_id' => $store->id,
                     'domain_key' => $domain->key(),
@@ -361,7 +387,9 @@ class ConversationPipeline
                     'plan_status' => $plan->status,
                 ]);
 
-                return "No encontré información sobre eso en las fuentes de «{$domain->label()}». ¿Puedes contarme un poco más o preguntarlo de otra forma?";
+                return filled($store->topic_unavailable_message)
+                    ? trim($store->topic_unavailable_message)
+                    : "No encontré información sobre eso en las fuentes de «{$domain->label()}». ¿Puedes contarme un poco más o preguntarlo de otra forma?";
             } else {
                 $fragments = $plan->fragments;
                 $planned = true;
@@ -463,6 +491,50 @@ class ConversationPipeline
             ->map(fn (WhatsAppMessage $message) => ['role' => $message->role, 'content' => $message->content])
             ->values()
             ->all();
+    }
+
+    /**
+     * A message that pointed to no product, in a store that asks instead of
+     * listing its catalog. Returns the product (or the real choice between
+     * products) to go on with, or null once it has replied:
+     * - only a commercial request ("quiero pagar"): the products to pay for;
+     * - a topic the classifier recognized: its product, or a choice among
+     *   that topic's products; this same message then gets the answer;
+     * - no topic and nothing asked (a greeting), or the classification
+     *   failed: the store's open question;
+     * - no topic but something asked: the store's "not available" reply
+     *   (its open question if that is not configured).
+     * No product is set and no sample is used before a topic is known.
+     *
+     * @param  Collection<int, Product>  $catalog
+     */
+    private function identifyTopic(Store $store, string $from, string $messageBody, Collection $catalog): ?ProductResolution
+    {
+        if ($this->commerce->isProductlessRequest($messageBody)) {
+            $payable = $catalog->filter(fn (Product $product) => $product->requiresSubscription())->values();
+
+            return ProductResolution::clarify($payable->isNotEmpty() ? $payable : $catalog);
+        }
+
+        $classification = $this->topics->classify($store, $messageBody, $catalog);
+
+        if ($classification->topicKey !== null) {
+            $products = $catalog->where('domain_key', $classification->topicKey)->values();
+
+            return $products->count() === 1 ? ProductResolution::selected($products->first()) : ProductResolution::clarify($products);
+        }
+
+        $unavailable = ! $classification->failed && $classification->request && filled($store->topic_unavailable_message);
+
+        Log::info('PIPELINE_TOPIC_UNIDENTIFIED', [
+            'store_id' => $store->id,
+            'reply' => $unavailable ? 'unavailable' : 'open_question',
+            'classification_failed' => $classification->failed,
+        ]);
+
+        $this->reply($store, $from, $messageBody, trim($unavailable ? $store->topic_unavailable_message : $store->topic_prompt_message));
+
+        return null;
     }
 
     /**

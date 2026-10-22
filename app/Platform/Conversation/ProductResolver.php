@@ -70,7 +70,9 @@ class ProductResolver
             return ProductResolution::selected($byVocabulary->first());
         }
 
-        return ProductResolution::clarify(($byVocabulary->isNotEmpty() ? $byVocabulary : $catalog)->take(self::MAX_OPTIONS));
+        return $byVocabulary->isNotEmpty()
+            ? ProductResolution::clarify($byVocabulary->take(self::MAX_OPTIONS))
+            : ProductResolution::unidentified($catalog->take(self::MAX_OPTIONS));
     }
 
     /** A product of this store's domain catalog, or null (e.g. deleted since). */

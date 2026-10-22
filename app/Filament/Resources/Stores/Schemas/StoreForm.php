@@ -120,6 +120,20 @@ class StoreForm
                     ->rows(4)
                     ->maxLength(1000)
                     ->columnSpanFull(),
+                Textarea::make('topic_prompt_message')
+                    ->label('Pregunta cuando no se identifica el tema (opcional)')
+                    ->placeholder('Ej.: ¿Qué te gustaría conocer?')
+                    ->helperText('Solo en modo conocimiento, con varios productos. Si un mensaje no indica de qué tema se trata (por ejemplo, un saludo), el bot hace esta pregunta en lugar de mostrar la lista de productos. Vacío: se muestra la lista.')
+                    ->rows(2)
+                    ->maxLength(500)
+                    ->columnSpanFull(),
+                Textarea::make('topic_unavailable_message')
+                    ->label('Respuesta cuando no hay información del tema (opcional)')
+                    ->placeholder('Ej.: No tengo información sobre eso. ¿Qué más te gustaría conocer?')
+                    ->helperText('Solo en modo conocimiento. Se envía cuando preguntan por un tema que la tienda no tiene o que sus fuentes no cubren; en ese caso la muestra gratuita no se gasta. Vacío: respuestas del sistema.')
+                    ->rows(2)
+                    ->maxLength(500)
+                    ->columnSpanFull(),
             ]);
     }
 }

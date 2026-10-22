@@ -122,6 +122,19 @@ class CommerceResponder
         return array_values(array_diff([...self::TERMS[self::INTENT_PRICES], ...self::TERMS[self::INTENT_STATUS]], self::EVERYDAY_TERMS));
     }
 
+    /**
+     * Whether the message is only a commercial request that names no product
+     * ("precios", "quiero pagar", "estado de mi pago"): the customer wants
+     * to buy or pay, but the product they mean is unknown.
+     */
+    public function isProductlessRequest(string $message): bool
+    {
+        $words = array_values(array_diff(preg_split('/[^a-z0-9]+/', $this->normalize($message), -1, PREG_SPLIT_NO_EMPTY), self::FILLER));
+        $terms = array_merge(...array_values(self::TERMS));
+
+        return array_intersect($words, $terms) !== [] && array_diff($words, $terms, self::OBJECTS) === [];
+    }
+
     /** What a customer without access gets instead of the protected service. */
     public function blockedReply(Store $store, Product $product, AccessDecision $access): string
     {

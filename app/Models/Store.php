@@ -26,6 +26,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'conversation_mode',
     'payment_instructions',
     'welcome_message',
+    'topic_prompt_message',
+    'topic_unavailable_message',
 ])]
 class Store extends Model
 {
