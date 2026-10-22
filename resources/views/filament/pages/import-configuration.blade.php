@@ -14,11 +14,19 @@
                 </label>
             @endif
 
-            <label class="grid gap-1 text-sm">
+            <div class="grid gap-1 text-sm">
                 <span class="font-medium">configuracion.json</span>
-                <input type="file" wire:model="file" accept=".json,application/json" class="text-sm">
-                @error('file') <span class="text-danger-600 text-sm">{{ $message }}</span> @enderror
-            </label>
+                {{-- The panel's CSS resets the native file input, so a panel button opens the picker. --}}
+                <input id="import-configuration-file" type="file" wire:model="file" accept=".json,application/json" style="display: none">
+                <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap">
+                    <x-filament::button tag="label" for="import-configuration-file" color="gray" icon="heroicon-o-document-arrow-up" style="cursor: pointer">
+                        Elegir archivo
+                    </x-filament::button>
+                    <span wire:loading.remove wire:target="file">{{ $file?->getClientOriginalName() ?? 'Ningún archivo seleccionado' }}</span>
+                    <span wire:loading wire:target="file">Cargando…</span>
+                </div>
+                @error('file') <span style="color: rgb(220 38 38)">{{ $message }}</span> @enderror
+            </div>
 
             <label class="flex items-start gap-2 text-sm">
                 <x-filament::input.checkbox wire:model.live="updateStoreTexts" />
