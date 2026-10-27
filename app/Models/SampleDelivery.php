@@ -9,12 +9,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
 
 /**
- * Record that a customer received the free sample of a product; written
- * only once the sample was actually delivered. Unique per customer and
- * product, append-only, with no status or expiry: it never grants the
- * paid service, that is what subscriptions are for.
+ * Record of the free replies a customer got for a product: created with
+ * the first one (delivered_at), its turns_used counting them up to the
+ * Core's limit. Unique per customer and product, with no status or
+ * expiry: it never grants the paid service, that is what subscriptions
+ * are for. Only SampleLedger moves the counter, with row-level queries;
+ * the model itself is never updated.
  */
-#[Fillable(['store_id', 'customer_id', 'product_id', 'capability_key', 'delivered_at'])]
+#[Fillable(['store_id', 'customer_id', 'product_id', 'capability_key', 'turns_used', 'delivered_at'])]
 class SampleDelivery extends Model
 {
     use BelongsToSubscriptionProduct;
@@ -22,6 +24,7 @@ class SampleDelivery extends Model
     protected function casts(): array
     {
         return [
+            'turns_used' => 'integer',
             'delivered_at' => 'datetime',
         ];
     }

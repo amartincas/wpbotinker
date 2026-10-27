@@ -46,6 +46,9 @@ const CA_PHONE = '573007775555';
 
 beforeEach(function () {
     $this->freezeSecond();
+    // The commercial reply to a customer with no free reply left (see
+    // FreeInteractionsTest), with the plan list after every reply.
+    config(['botinker.free_interactions.max' => 0, 'botinker.free_interactions.offer_interval_hours' => 0]);
 
     $this->store = makeStore(['conversation_mode' => Store::MODE_KNOWLEDGE, 'payment_instructions' => 'Nequi 300']);
     caTopic($this->store, 'astrologia', 'Astrología', 'INSTRUCCION-ASTRO');
@@ -378,6 +381,7 @@ describe('when the commercial engine stays out', function () {
     });
 
     it('never mixes commercial resources into the free sample', function () {
+        config(['botinker.free_interactions.max' => 1]);
         Topic::where('store_id', $this->store->id)->where('key', 'astrologia')->update(['retrieval_instructions' => 'GUIA-ASTRO']);
         $this->lectura->update(['sample_instructions' => 'MUESTRA-ASTRO']);
 
@@ -699,6 +703,7 @@ describe('K1 — the commercial reply never reads sensitive facts', function () 
     });
 
     it('keeps every fact for the free sample', function () {
+        config(['botinker.free_interactions.max' => 1]);
         $this->lectura->update(['sample_instructions' => 'MUESTRA-ASTRO']);
 
         caJob($this->store, 'Quiero mi Lectura Astral');

@@ -243,6 +243,8 @@ describe('welcome message', function () {
 
 describe('free sample grounded in the topic guide', function () {
     beforeEach(function () {
+        // A single free reply, so it carries the offer (3 are covered by FreeInteractionsTest).
+        config(['botinker.free_interactions.max' => 1]);
         $this->store = makeStore(['conversation_mode' => Store::MODE_KNOWLEDGE, 'payment_instructions' => 'Nequi 300']);
         $this->astro = cxAstrology($this->store);
     });
@@ -336,12 +338,13 @@ describe('free sample grounded in the topic guide', function () {
         expect(cxLastTo(CX_CUSTOMER))->toBe("Respuesta generada.\n\nCIERRE-CONFIGURADO: ¿quieres la lectura completa?\n\nPlanes de «Lectura Astral»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.");
     });
 
-    it('keeps the standard closing when none is configured', function () {
+    it('puts the plans right after the reply when no closing is configured', function () {
         cxBirthDate($this->store);
 
         cxJob($this->store, 'Quiero mi Lectura Astral');
 
-        expect(cxLastTo(CX_CUSTOMER))->toContain("Respuesta generada.\n\nEsta fue tu muestra gratuita de «Lectura Astral».\n\nPlanes de «Lectura Astral»:");
+        expect(cxLastTo(CX_CUSTOMER))->toContain("Respuesta generada.\n\nPlanes de «Lectura Astral»:")
+            ->not->toContain('Esta fue tu muestra');
     });
 });
 

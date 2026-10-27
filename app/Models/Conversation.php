@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'current_product_id',
     'ctwa_clid',
     'pending_state',
+    'offers_shown',
 ])]
 class Conversation extends Model
 {
@@ -24,6 +25,7 @@ class Conversation extends Model
         return [
             'last_session_at' => 'datetime',
             'pending_state' => 'array',
+            'offers_shown' => 'array',
         ];
     }
 

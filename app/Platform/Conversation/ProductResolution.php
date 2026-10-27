@@ -22,7 +22,17 @@ final class ProductResolution
         public readonly ?Product $product,
         public readonly Collection $options,
         public readonly bool $unidentified = false,
+        public readonly bool $answersClarification = false,
     ) {}
+
+    /**
+     * The customer picked this product from the options offered (by number
+     * or by name alone): the message is the choice, not a query.
+     */
+    public static function chosen(Product $product): self
+    {
+        return new self($product, collect(), answersClarification: true);
+    }
 
     /**
      * @param  Collection<int, Product>  $catalog

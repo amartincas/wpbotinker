@@ -82,10 +82,16 @@ describe('products', function () {
         Product::create(['store_id' => $this->store->id, 'name' => 'Camisa', 'description' => 'x', 'price' => 1, 'stock' => 1, 'access_mode' => Product::ACCESS_SUBSCRIPTION]);
     })->throws(InvalidArgumentException::class, 'Only a domain product');
 
-    it('offer a sample only with instructions and a subscription', function () {
+    it('offer the free replies with a subscription, with or without sample instructions, unless the Core disables them', function () {
+        $withoutInstructions = commerceProduct($this->store, ['name' => 'Sin instrucciones', 'sample_instructions' => null]);
+
         expect($this->product->offersSample())->toBeTrue()
-            ->and(commerceProduct($this->store, ['name' => 'Sin muestra', 'sample_instructions' => null])->offersSample())->toBeFalse()
+            ->and($withoutInstructions->offersSample())->toBeTrue()
             ->and(commerceProduct($this->store, ['name' => 'Libre', 'access_mode' => Product::ACCESS_OPEN])->offersSample())->toBeFalse();
+
+        config(['botinker.free_interactions.max' => 0]);
+
+        expect($this->product->offersSample())->toBeFalse()->and($withoutInstructions->offersSample())->toBeFalse();
     });
 
     it('accept a registered capability of their own domain for the sample', function () {
@@ -407,8 +413,9 @@ describe('sample deliveries', function () {
             ->toThrow(UniqueConstraintViolationException::class);
     });
 
-    it('are refused for a product without a sample', function () {
-        SampleDelivery::create(['customer_id' => $this->customer->id, 'product_id' => commerceProduct($this->store, ['name' => 'Sin muestra', 'sample_instructions' => null])->id]);
+    it('are refused when the Core gives no free replies', function () {
+        config(['botinker.free_interactions.max' => 0]);
+        SampleDelivery::create(['customer_id' => $this->customer->id, 'product_id' => $this->product->id]);
     })->throws(InvalidArgumentException::class, 'offers no sample');
 
     it('are refused for a customer of another store', function () {

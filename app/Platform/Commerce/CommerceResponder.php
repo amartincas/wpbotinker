@@ -9,6 +9,7 @@ use App\Models\Plan;
 use App\Models\Product;
 use App\Models\Store;
 use App\Models\Subscription;
+use Carbon\Carbon;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -104,7 +105,7 @@ class CommerceResponder
 
         return match ($intent) {
             self::INTENT_STATUS => $this->reply($target, $this->statusText($customer, $target)),
-            self::INTENT_PRICES => $this->reply($target, $this->subscriptionLine($customer, $target).$this->offerText($target)),
+            self::INTENT_PRICES => $this->pricesReply($conversation, $customer, $target),
             self::INTENT_PAY => $this->pay($store, $conversation, $customer, $target),
         };
     }
@@ -135,8 +136,12 @@ class CommerceResponder
         return array_intersect($words, $terms) !== [] && array_diff($words, $terms, self::OBJECTS) === [];
     }
 
-    /** What a customer without access gets instead of the protected service. */
-    public function blockedReply(Store $store, Product $product, AccessDecision $access): string
+    /**
+     * What a customer without access gets instead of the protected service.
+     * With the conversation, the plan list follows the offer frequency
+     * (see unaskedOffer()); without it, it is always shown.
+     */
+    public function blockedReply(Store $store, Product $product, AccessDecision $access, ?Conversation $conversation = null): string
     {
         $payment = $access->openPayment;
 
@@ -144,7 +149,7 @@ class CommerceResponder
             return $this->openPaymentText($store, $product, $payment);
         }
 
-        return $this->accessStateLine($product, $access, withoutSubscription: true).$this->offerText($product);
+        return $this->accessStateLine($product, $access, withoutSubscription: true).$this->unaskedOffer($product, $conversation);
     }
 
     /**
@@ -154,13 +159,13 @@ class CommerceResponder
      * a subscription" would just repeat what the reply already explained.
      * With an open payment it is exactly blockedReply().
      */
-    public function offerAfterCommercialReply(Store $store, Product $product, AccessDecision $access): string
+    public function offerAfterCommercialReply(Store $store, Product $product, AccessDecision $access, ?Conversation $conversation = null): string
     {
         if ($access->openPayment !== null) {
             return $this->blockedReply($store, $product, $access);
         }
 
-        return $this->accessStateLine($product, $access, withoutSubscription: false).$this->offerText($product);
+        return $this->accessStateLine($product, $access, withoutSubscription: false).$this->unaskedOffer($product, $conversation);
     }
 
     /** Why the customer has no access, as the line before the offer ('' when not worth saying). */
@@ -173,13 +178,59 @@ class CommerceResponder
         };
     }
 
-    /** The offer that follows a delivered free sample. */
+    /**
+     * The offer that follows the last free reply: the product's closing
+     * when configured, then the plans, which always come from the catalog.
+     * Once it went out, the caller records it (recordOfferShown()).
+     */
     public function afterSampleText(Product $product): string
     {
-        // The product's own closing when configured; the plans always come from the catalog.
-        $closing = trim((string) $product->sample_closing_message) ?: "Esta fue tu muestra gratuita de «{$product->name}».";
+        $closing = trim((string) $product->sample_closing_message);
 
-        return $closing."\n\n".$this->offerText($product);
+        return ($closing !== '' ? $closing."\n\n" : '').$this->offerText($product);
+    }
+
+    /** The plan list of the product was just shown in this conversation. */
+    public function recordOfferShown(Conversation $conversation, Product $product): void
+    {
+        $shown = $conversation->offers_shown ?? [];
+        $shown[(string) $product->id] = now()->toIso8601String();
+
+        $conversation->update(['offers_shown' => $shown]);
+    }
+
+    /**
+     * The plan list when the customer did not ask for it: shown at most
+     * once every botinker.free_interactions.offer_interval_hours per
+     * conversation and product, otherwise a single line saying how to see
+     * it. Asking for prices, plans or to pay always shows it.
+     */
+    private function unaskedOffer(Product $product, ?Conversation $conversation): string
+    {
+        if ($conversation === null || $this->plans($product)->isEmpty()) {
+            return $this->offerText($product);
+        }
+
+        $last = $conversation->offers_shown[(string) $product->id] ?? null;
+        $hours = max(0, (int) config('botinker.free_interactions.offer_interval_hours', 24));
+
+        if ($last !== null && $hours > 0 && Carbon::parse($last)->gt(now()->subHours($hours))) {
+            return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+        }
+
+        $this->recordOfferShown($conversation, $product);
+
+        return $this->offerText($product);
+    }
+
+    /** Asked for: the plan list is always shown, and counts as shown. */
+    private function pricesReply(Conversation $conversation, Customer $customer, Product $product): CommerceReply
+    {
+        if ($this->plans($product)->isNotEmpty()) {
+            $this->recordOfferShown($conversation, $product);
+        }
+
+        return $this->reply($product, $this->subscriptionLine($customer, $product).$this->offerText($product));
     }
 
     private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product): CommerceReply

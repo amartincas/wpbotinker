@@ -46,6 +46,9 @@ const C2_PHONE = '573007770000';
 
 beforeEach(function () {
     config(['botinker.domains' => ['oracle' => OracleTestDomain::class, 'finance' => FinanceTestDomain::class]]);
+    // Access rules with a single free reply, the plan list after every
+    // commercial reply; the 3 free replies are covered by FreeInteractionsTest.
+    config(['botinker.free_interactions.max' => 1, 'botinker.free_interactions.offer_interval_hours' => 0]);
     Storage::fake(PaymentReceipt::DISK);
     // Stored dates have second precision.
     $this->freezeSecond();
@@ -144,6 +147,8 @@ function c2Webhook($test, Store $store, string $body, ?string $adId = null)
 
 describe('product identification', function () {
     beforeEach(function () {
+        // No free reply: the reply names the product straight away.
+        config(['botinker.free_interactions.max' => 0]);
         $this->reading->update(['sample_instructions' => null, 'sample_capability_key' => null, 'meta_ad_ids' => ['ad-lectura']]);
         $this->chart = c2Product($this->store, ['name' => 'Carta astral', 'sample_instructions' => null, 'sample_capability_key' => null]);
         Plan::create(['product_id' => $this->chart->id, 'name' => 'Anual', 'price' => 90000, 'duration_days' => 365]);
@@ -224,9 +229,8 @@ describe('free sample', function () {
             ->toContain('MUESTRA-INSTR: da solo el número de la suerte.')
             ->toContain('Número de la suerte calculado: 1.')
             ->not->toContain('SERVICIO-COMPLETO')
-            ->and(c2Text())->toStartWith('Tu número de la suerte es 1.')
-            ->toContain('Esta fue tu muestra gratuita de «Lectura».')
-            ->toContain('1. Mensual: $20.000 COP por 30 días')
+            // No closing configured: the plans follow the last free reply directly.
+            ->and(c2Text())->toBe("Tu número de la suerte es 1.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.")
             ->and(SampleDelivery::sole())->capability_key->toBe('oracle.lucky_number');
 
         $calls = count(mainChatRequests());
@@ -297,6 +301,8 @@ describe('free sample', function () {
 
 describe('subscription states', function () {
     beforeEach(function () {
+        // No free reply: the paid service is blocked from the first message.
+        config(['botinker.free_interactions.max' => 0]);
         $this->reading->update(['sample_instructions' => null, 'sample_capability_key' => null]);
         $this->customer = c2BirthDate($this->store);
         fakeExternalApis('Lectura completa.');
@@ -341,6 +347,8 @@ describe('subscription states', function () {
 
 describe('payments', function () {
     beforeEach(function () {
+        // No free reply: the paid service is blocked from the first message.
+        config(['botinker.free_interactions.max' => 0]);
         $this->reading->update(['sample_instructions' => null, 'sample_capability_key' => null]);
         $this->customer = c2BirthDate($this->store);
         fakeExternalApis('Lectura completa.');
@@ -538,7 +546,7 @@ describe('compatibility', function () {
 
         c2Job($topicStore, 'Quiero una lectura de cartas');
         expect(c2Prompt())->toContain('MUESTRA-TAROT: una sola carta.')->toContain('INSTR-TAROT')
-            ->and(c2Text())->toContain('Esta fue tu muestra gratuita de «Tarot».');
+            ->and(c2Text())->toContain('Planes de «Tarot»:');
 
         c2Job($topicStore, 'Otra carta');
         expect(c2Text())->toStartWith('Para usar «Tarot» necesitas una suscripción.');
@@ -592,6 +600,8 @@ describe('optional capability failures', function () {
 
 describe('commercial requests vs service questions', function () {
     beforeEach(function () {
+        // No free reply: the paid service is blocked from the first message.
+        config(['botinker.free_interactions.max' => 0]);
         $this->reading->update(['sample_instructions' => null, 'sample_capability_key' => null]);
         $this->customer = c2BirthDate($this->store);
         fakeExternalApis('Lectura completa.');
@@ -677,15 +687,21 @@ describe('ambiguous ads in the sales flow', function () {
 });
 
 describe('permanent free access', function () {
-    it('tells apart a free product, a paid product with a sample and a paid product without one', function () {
+    it('tells apart a free product, a paid product with free replies and a paid product without them', function () {
         $customer = c2Customer($this->store);
         $free = c2Product($this->store, ['name' => 'Gratis', 'access_mode' => Product::ACCESS_OPEN, 'sample_instructions' => null, 'sample_capability_key' => null]);
-        $paidNoSample = c2Product($this->store, ['name' => 'Sin muestra', 'sample_instructions' => null, 'sample_capability_key' => null]);
+        $paidNoInstructions = c2Product($this->store, ['name' => 'Sin instrucciones', 'sample_instructions' => null, 'sample_capability_key' => null]);
         $gate = app(AccessGate::class);
 
         expect($gate->decide($customer, $free))->allowed->toBeTrue()->reason->toBe(AccessDecision::OPEN)
             ->and($gate->decide($customer, $this->reading))->allowed->toBeFalse()->sampleAvailable->toBeTrue()
-            ->and($gate->decide($customer, $paidNoSample))->allowed->toBeFalse()->sampleAvailable->toBeFalse();
+            // The free replies are the Core's: the instructions only adapt them.
+            ->and($gate->decide($customer, $paidNoInstructions))->allowed->toBeFalse()->sampleAvailable->toBeTrue();
+
+        config(['botinker.free_interactions.max' => 0]);
+
+        expect($gate->decide($customer, $paidNoInstructions))->allowed->toBeFalse()->sampleAvailable->toBeFalse()
+            ->and($gate->decide($customer, $free))->allowed->toBeTrue();
     });
 
     it('answers a free product again and again, with no subscription and no sample', function () {

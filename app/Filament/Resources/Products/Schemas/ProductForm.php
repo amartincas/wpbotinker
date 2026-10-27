@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Products\Schemas;
 
 use App\Models\Product;
+use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Memory\FactDefinition;
@@ -179,8 +180,8 @@ class ProductForm
                             ->live()
                             ->required(),
                         Textarea::make('sample_instructions')
-                            ->label('Instrucciones de la muestra gratuita')
-                            ->helperText('Qué ofrece la muestra y cómo responder. Se entrega una sola vez por cliente, antes de la oferta de suscripción. Sin instrucciones, el producto no ofrece muestra.')
+                            ->label('Instrucciones de las respuestas gratuitas (opcional)')
+                            ->helperText('Todo producto con suscripción da a cada cliente las respuestas gratuitas de la plataforma (hoy '.SampleLedger::limit().') antes de la oferta; la estrategia de cada una es global. Aquí solo se adaptan al tema: qué ofrecer gratis y qué reservar para el servicio completo. Vacío: se usan las instrucciones del servicio.')
                             ->requiredWith('sample_capability_key')
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
                             ->columnSpanFull(),
@@ -196,7 +197,7 @@ class ProductForm
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION),
                         Textarea::make('sample_closing_message')
                             ->label('Cierre de la muestra (opcional)')
-                            ->helperText('Texto que sigue a la muestra gratuita, antes de los planes y precios (que se agregan solos). Vacío: se usa el cierre estándar.')
+                            ->helperText('Texto que sigue a la última respuesta gratuita, antes de los planes y precios (que se agregan solos): los beneficios reales del servicio completo. Vacío: solo los planes.')
                             ->rows(3)
                             ->maxLength(1000)
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)

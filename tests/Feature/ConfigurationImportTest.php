@@ -155,8 +155,10 @@ it('clears the sample texts when the file says there is no sample', function () 
 
     ciImporter()->import($this->store, ciJson(ciConfig(['has_sample' => false, 'product' => ['sample_instructions' => null, 'sample_closing_message' => null]])), true);
 
-    expect(Product::sole()->offersSample())->toBeFalse()
-        ->and(Product::sole()->sample_closing_message)->toBeNull();
+    // The free replies are the Core's: without sample texts they follow the service instructions.
+    expect(Product::sole()->sample_instructions)->toBeNull()
+        ->and(Product::sole()->sample_closing_message)->toBeNull()
+        ->and(Product::sole()->offersSample())->toBeTrue();
 });
 
 it('leaves the store texts alone unless asked', function () {

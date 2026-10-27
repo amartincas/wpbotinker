@@ -41,13 +41,15 @@ class ProductResolver
         $text = $this->normalize($message);
 
         if ($product = $this->chosenOption($conversation, $catalog, $text)) {
-            return ProductResolution::selected($product);
+            return ProductResolution::chosen($product);
         }
 
         $mentioned = $this->mentioned($catalog, $text);
 
         if ($mentioned->count() === 1) {
-            return ProductResolution::selected($mentioned->first());
+            return $this->onlyNamesOption($conversation, $mentioned->first(), $text)
+                ? ProductResolution::chosen($mentioned->first())
+                : ProductResolution::selected($mentioned->first());
         }
 
         if ($mentioned->count() > 1) {
@@ -110,6 +112,25 @@ class ProductResolver
         $productId = $pending['product_ids'][(int) $match[1] - 1] ?? null;
 
         return $productId ? $catalog->firstWhere('id', $productId) : null;
+    }
+
+    /**
+     * The reply to a pending clarification is only the name (or an alias)
+     * of one of the options offered: a choice, with nothing else asked.
+     */
+    private function onlyNamesOption(Conversation $conversation, Product $product, string $text): bool
+    {
+        $pending = $conversation->pending_state;
+
+        if (($pending['type'] ?? null) !== self::PENDING_CLARIFICATION || ! in_array($product->id, $pending['product_ids'] ?? [], true)) {
+            return false;
+        }
+
+        $words = trim(preg_replace('/[^a-z0-9]+/', ' ', $text));
+
+        return collect([$product->name, ...($product->aliases ?? [])])
+            ->map(fn ($term) => trim(preg_replace('/[^a-z0-9]+/', ' ', $this->normalize((string) $term))))
+            ->contains(fn ($term) => $term !== '' && $term === $words);
     }
 
     /**

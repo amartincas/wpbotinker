@@ -13,6 +13,7 @@ use App\Platform\Commerce\AccessDecision;
 use App\Platform\Commerce\AccessGate;
 use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Commerce\CommercialAdvisor;
+use App\Platform\Commerce\FreeTurn;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Contracts\ProvidesRetrievalGuide;
@@ -52,6 +53,9 @@ class ConversationPipeline
 
     /** How long a generated sample waits for a retry (the job's retry window). */
     private const SAMPLE_CACHE_MINUTES = 10;
+
+    /** Characters kept of the question a clarification interrupted. */
+    private const MAX_ORIGIN_LENGTH = 1000;
 
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
@@ -108,6 +112,7 @@ class ConversationPipeline
         }
 
         $product = $pending->answeredProductId ? $this->resolver->catalogProduct($store, $pending->answeredProductId) : null;
+        $clarifiedQuery = null;
 
         if ($product === null) {
             $resolution = $this->resolver->resolve($store, $conversation, $messageBody, $adProductId);
@@ -123,9 +128,18 @@ class ConversationPipeline
             }
 
             if ($resolution->needsClarification()) {
+                // The question asked is kept: once the customer picks an
+                // option, it is what gets answered, not the choice itself.
+                // A clarification asked again keeps the first question.
+                $previous = $conversation->pending_state;
+                $origin = ($previous['type'] ?? null) === ProductResolver::PENDING_CLARIFICATION && filled($previous['origin_message'] ?? null)
+                    ? $previous['origin_message']
+                    : mb_substr(trim($messageBody), 0, self::MAX_ORIGIN_LENGTH);
+
                 $conversation->update(['pending_state' => [
                     'type' => ProductResolver::PENDING_CLARIFICATION,
                     'product_ids' => $resolution->options->pluck('id')->all(),
+                    'origin_message' => $origin,
                 ]]);
 
                 Log::info('PIPELINE_CLARIFICATION', [
@@ -140,6 +154,12 @@ class ConversationPipeline
             }
 
             $product = $resolution->product;
+
+            // The customer only picked an option: what gets answered is the
+            // question the clarification interrupted.
+            if ($resolution->answersClarification && filled($conversation->pending_state['origin_message'] ?? null)) {
+                $clarifiedQuery = (string) $conversation->pending_state['origin_message'];
+            }
         }
 
         $domain = $product ? $this->domains->get($product->domain_key, $store->id) : null;
@@ -150,14 +170,15 @@ class ConversationPipeline
         // without a sample to give, no facts are asked: the customer gets
         // the commercial answer straight away.
         if ($product && ($access = $this->access->decide($customer, $product)) && ! $access->allowed && ! $access->sampleAvailable) {
-            $this->replyBlocked($store, $from, $messageBody, $customer, $product, $domain, $access);
+            $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
 
             return;
         }
 
         // What the customer asked: when this message only answered a question
-        // for the product's data, the query that led to that question.
-        $query = ($product ? $pending->originFor($product->id) : null) ?? $messageBody;
+        // for the product's data, or only picked an option, the query that
+        // led to that question.
+        $query = ($product ? $pending->originFor($product->id) : null) ?? $clarifiedQuery ?? $messageBody;
 
         if ($product && $domain && ($question = $this->facts->require($conversation, $customer, $product, $domain, $pending->rejectionFor($product->id), $query))) {
             Log::info('PIPELINE_FACT_REQUESTED', ['store_id' => $store->id, 'customer_phone' => $from, 'domain_key' => $domain->key()]);
@@ -171,21 +192,24 @@ class ConversationPipeline
         // have changed while facts were being collected. Without access, the
         // only way in is the free sample, reserved before it is generated.
         $sample = null;
+        $freeTurn = null;
 
         if ($product && ! ($access = $this->access->decide($customer, $product))->allowed) {
             $sample = $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
 
             if ($sample === null) {
-                $this->replyBlocked($store, $from, $messageBody, $customer, $product, $domain, $access);
+                $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
 
                 return;
             }
+
+            $freeTurn = new FreeTurn($sample->turns_used, SampleLedger::limit());
         }
 
         try {
             // A retry of the same message reuses the sample already generated.
             $answer = $sample ? $this->rememberedSample($store, $wamid) : null;
-            $answer ??= $this->answer($store, $from, $messageBody, $query, $customer, $product, $domain, $sample !== null);
+            $answer ??= $this->answer($store, $from, $messageBody, $query, $customer, $product, $domain, $freeTurn);
         } catch (Throwable $e) {
             // Nothing was delivered: the sample stays available.
             if ($sample) {
@@ -212,8 +236,14 @@ class ConversationPipeline
         }
 
         if ($sample) {
+            // Only the last free reply carries the offer; the others leave
+            // the conversation open.
             $this->rememberSample($store, $wamid, $answer);
-            $this->deliverSample($store, $from, $messageBody, $answer."\n\n".$this->commerce->afterSampleText($product), $domain?->key(), $sample, $wamid);
+            $this->deliverSample($store, $from, $messageBody, $freeTurn->isLast() ? $answer."\n\n".$this->commerce->afterSampleText($product) : $answer, $domain?->key(), $sample, $wamid);
+
+            if ($freeTurn->isLast()) {
+                $this->commerce->recordOfferShown($conversation, $product);
+            }
 
             return;
         }
@@ -303,8 +333,9 @@ class ConversationPipeline
      *                         $messageBody when this message answered a question for
      *                         their data, and then joins it in the knowledge search
      */
-    private function answer(Store $store, string $from, string $messageBody, string $query, $customer, ?Product $product, ?DomainModule $domain, bool $isSample): ?string
+    private function answer(Store $store, string $from, string $messageBody, string $query, $customer, ?Product $product, ?DomainModule $domain, ?FreeTurn $freeTurn): ?string
     {
+        $isSample = $freeTurn !== null;
         $facts = $domain ? $this->memory->visibleFacts($customer, $domain) : [];
         $capabilityKey = $isSample ? $product?->sample_capability_key : $product?->capability_key;
         $computed = null;
@@ -330,6 +361,14 @@ class ConversationPipeline
         // The original query adds to this message (which may itself carry
         // meaning, e.g. a question asked as a fact); it never replaces it.
         $searchText = $query === $messageBody ? $messageBody : $query."\n".$messageBody;
+
+        // A later free reply usually answers the question the previous one
+        // asked ("en el trabajo"): the customer's previous message keeps
+        // the search on the subject, since a free reply must rest on the
+        // sources.
+        if ($freeTurn !== null && $freeTurn->number > 1 && $domain !== null && ($previous = $this->previousCustomerMessage($store, $from, $domain->key())) !== null) {
+            $searchText = $previous."\n".$searchText;
+        }
         $guided = ! $keyed && $domain instanceof ProvidesRetrievalGuide && trim($domain->retrievalGuide()) !== '';
         $fragments = match (true) {
             $domain === null => collect(),
@@ -398,7 +437,7 @@ class ConversationPipeline
 
         $answer = AIServiceFactory::make($store)->getResponse(
             $messageBody,
-            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $isSample ? $product->sample_instructions : null, $query !== $messageBody ? $query : null),
+            $this->prompts->build($store, $domain, $product, $facts, $fragments, $computed, $freeTurn, $query !== $messageBody ? $query : null),
             $this->history($store, $from, $domain?->key()),
         );
 
@@ -408,6 +447,7 @@ class ConversationPipeline
             'domain_key' => $domain?->key(),
             'product_id' => $product?->id,
             'sample' => $isSample,
+            'free_turn' => $freeTurn?->number,
             'fact_keys' => array_keys($facts),
             'capability_key' => $computed ? $capabilityKey : null,
             'knowledge_retrieval' => $keyed ? 'keys' : ($planned ? 'planned' : 'message'),
@@ -423,7 +463,7 @@ class ConversationPipeline
      * state, plans), preceded by the product's configured commercial
      * resources when CommercialAdvisor finds some that fit the message.
      */
-    private function replyBlocked(Store $store, string $from, string $messageBody, $customer, Product $product, ?DomainModule $domain, AccessDecision $access): void
+    private function replyBlocked(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, ?DomainModule $domain, AccessDecision $access): void
     {
         $commercial = $domain
             ? $this->advisor->respond($store, $domain, $product, $access, $messageBody, $this->memory->visibleFacts($customer, $domain))
@@ -439,8 +479,8 @@ class ConversationPipeline
         ]);
 
         $offer = $commercial !== null
-            ? $this->commerce->offerAfterCommercialReply($store, $product, $access)
-            : $this->commerce->blockedReply($store, $product, $access);
+            ? $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation)
+            : $this->commerce->blockedReply($store, $product, $access, $conversation);
 
         $this->reply($store, $from, $messageBody, $commercial !== null ? $commercial."\n\n".$offer : $offer, $product->domain_key);
     }
@@ -479,6 +519,19 @@ class ConversationPipeline
      *
      * @return list<array{role: string, content: string}>
      */
+    /** The customer's last message in this domain before the current one (not yet saved), or null. */
+    private function previousCustomerMessage(Store $store, string $from, string $domainKey): ?string
+    {
+        $content = WhatsAppMessage::where('store_id', $store->id)
+            ->where('customer_phone', $from)
+            ->where('domain_key', $domainKey)
+            ->where('role', 'user')
+            ->latest('id')
+            ->value('content');
+
+        return is_string($content) && trim($content) !== '' ? $content : null;
+    }
+
     private function history(Store $store, string $from, ?string $domainKey): array
     {
         return WhatsAppMessage::where('store_id', $store->id)

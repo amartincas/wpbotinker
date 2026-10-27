@@ -162,6 +162,7 @@ describe('clarification instead of an arbitrary choice', function () {
             ->and(domainConversation($this->store)->pending_state)->toBe([
                 'type' => 'product_clarification',
                 'product_ids' => [$this->chart->id, $this->diet->id],
+                'origin_message' => 'Quiero la carta astral y también el plan de dieta',
             ]);
     });
 

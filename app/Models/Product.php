@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Platform\Commerce\SampleLedger;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -90,10 +91,14 @@ class Product extends Model
         return $this->access_mode === self::ACCESS_SUBSCRIPTION;
     }
 
-    /** The sample exists when its instructions are configured. */
+    /**
+     * Every subscription product gives the Core's free replies (none when
+     * the global limit is 0). Its sample instructions, when configured,
+     * only adapt them to the domain.
+     */
     public function offersSample(): bool
     {
-        return $this->requiresSubscription() && filled($this->sample_instructions);
+        return $this->requiresSubscription() && SampleLedger::limit() > 0;
     }
 
     /**
