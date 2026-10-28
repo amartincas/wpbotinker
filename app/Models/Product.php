@@ -29,6 +29,8 @@ use InvalidArgumentException;
     'sample_instructions',
     'sample_capability_key',
     'sample_closing_message',
+    'opening_message',
+    'opening_triggers',
     'activation_message',
     'commercial_instructions',
 ])]
@@ -61,6 +63,7 @@ class Product extends Model
             'meta_ad_ids' => 'array',
             'aliases' => 'array',
             'required_facts' => 'array',
+            'opening_triggers' => 'array',
         ];
     }
 

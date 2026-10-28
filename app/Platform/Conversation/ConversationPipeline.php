@@ -14,6 +14,7 @@ use App\Platform\Commerce\AccessGate;
 use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\FreeTurn;
+use App\Platform\Commerce\OpeningMessage;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Contracts\ProvidesRetrievalGuide;
@@ -80,6 +81,7 @@ class ConversationPipeline
         private readonly KnowledgePlanner $planner,
         private readonly CommercialAdvisor $advisor,
         private readonly TopicClassifier $topics,
+        private readonly OpeningMessage $openings,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -206,9 +208,20 @@ class ConversationPipeline
             $freeTurn = new FreeTurn($sample->turns_used, SampleLedger::limit());
         }
 
+        // The product's configured opening, exactly as written, is the first
+        // free reply when the message is one of its triggers; it replaces
+        // the store's generic welcome.
+        $opening = $freeTurn?->number === 1 ? $this->openings->for($product, $messageBody) : null;
+
+        if ($opening !== null) {
+            $this->welcome = null;
+
+            Log::info('PIPELINE_OPENING', ['store_id' => $store->id, 'customer_phone' => $from, 'product_id' => $product->id]);
+        }
+
         try {
             // A retry of the same message reuses the sample already generated.
-            $answer = $sample ? $this->rememberedSample($store, $wamid) : null;
+            $answer = $opening ?? ($sample ? $this->rememberedSample($store, $wamid) : null);
             $answer ??= $this->answer($store, $from, $messageBody, $query, $customer, $product, $domain, $freeTurn);
         } catch (Throwable $e) {
             // Nothing was delivered: the sample stays available.

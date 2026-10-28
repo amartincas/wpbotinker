@@ -202,6 +202,19 @@ class ProductForm
                             ->maxLength(1000)
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
                             ->columnSpanFull(),
+                        Textarea::make('opening_message')
+                            ->label('Mensaje inicial (opcional)')
+                            ->helperText('Se envía exactamente como está escrito, en lugar del saludo de la tienda, cuando el primer mensaje del cliente es uno de los activadores. Cuenta como la primera respuesta gratuita y no lleva precios. Vacío: sin mensaje inicial.')
+                            ->rows(5)
+                            ->maxLength(2000)
+                            ->requiredWith('opening_triggers')
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        TagsInput::make('opening_triggers')
+                            ->label('Activadores del mensaje inicial')
+                            ->helperText('Mensajes que lo activan, por ejemplo el mensaje precargado del anuncio. Se comparan sin tildes, mayúsculas ni signos.')
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
                         Textarea::make('commercial_instructions')
                             ->label('Instrucciones comerciales (opcional)')
                             ->helperText('Cómo ofrecer este producto a quien aún no tiene acceso: qué recurso comercial usar según lo que diga el cliente y cómo responder. Los recursos se cargan como fuentes de uso «Recursos comerciales». Sin instrucciones o sin recursos, se responde como hasta ahora. Precios y planes los agrega siempre el sistema.')
