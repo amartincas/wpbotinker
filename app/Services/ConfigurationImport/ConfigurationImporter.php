@@ -12,6 +12,7 @@ use App\Platform\Knowledge\KnowledgeFile;
 use App\Platform\Knowledge\KnowledgeIngestor;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\PersonFacts;
+use App\Services\SampleContentGuard;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +64,7 @@ final class ConfigurationImporter
         private readonly CommercialClaims $claims,
         private readonly DomainRegistry $domains,
         private readonly PersonFacts $personFacts,
+        private readonly SampleContentGuard $sampleContent,
     ) {}
 
     /** What the import would do. Writes nothing. */
@@ -266,7 +268,7 @@ final class ConfigurationImporter
             }
 
             if (! in_array($source['purpose'] ?? null, KnowledgeSource::PURPOSES, true)) {
-                $report->error("«{$at}.purpose» debe ser «knowledge» o «commercial».");
+                $report->error("«{$at}.purpose» debe ser «knowledge», «commercial» o «sample».");
             }
 
             if (! in_array($source['delivery'] ?? KnowledgeSource::DELIVERY_REFERENCE, KnowledgeSource::DELIVERIES, true)) {
@@ -293,8 +295,21 @@ final class ConfigurationImporter
         $product = $this->applyProduct($store, $topic, $config['product'], $config['has_sample'], $report);
         $this->applyStore($store, $config['store'] ?? [], $updateStoreTexts, $report);
 
+        $samples = [];
+
         foreach ($config['knowledge_sources'] as $source) {
-            $this->applySource($store, $topic, $product, $source, $report);
+            $applied = $this->applySource($store, $topic, $product, $source, $report);
+
+            if ($applied->purpose === KnowledgeSource::PURPOSE_SAMPLE) {
+                $samples[] = $applied;
+            }
+        }
+
+        // After all of them: the same file may bring the knowledge a sample repeats.
+        foreach ($samples as $sample) {
+            if (($refusal = $this->sampleContent->refusalFor($sample)) !== null) {
+                throw new RuntimeException("Fuente «{$sample->title}»: {$refusal}");
+            }
         }
 
         $this->checkGuide($store, $topic, $product, $report);
@@ -371,7 +386,7 @@ final class ConfigurationImporter
         $this->save($store, 'Tienda: system prompt y bienvenida', $report);
     }
 
-    private function applySource(Store $store, Topic $topic, Product $product, array $data, ImportReport $report): void
+    private function applySource(Store $store, Topic $topic, Product $product, array $data, ImportReport $report): KnowledgeSource
     {
         $purpose = $data['purpose'];
         $delivery = $purpose === KnowledgeSource::PURPOSE_COMMERCIAL ? ($data['delivery'] ?? KnowledgeSource::DELIVERY_REFERENCE) : KnowledgeSource::DELIVERY_REFERENCE;
@@ -409,6 +424,8 @@ final class ConfigurationImporter
         };
 
         $report->row($element, $action, [], $action === ImportReport::UNCHANGED ? null : $source->chunks()->count().' fragmentos');
+
+        return $source;
     }
 
     /** Titles quoted in the guide must exist in the topic's knowledge, letter by letter. */

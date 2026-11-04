@@ -21,67 +21,67 @@ class LeadForm
                 // mutateFormDataBeforeCreate(); super admins have no store of
                 // their own, so they need to pick one explicitly here.
                 Select::make('store_id')
-                    ->label('Store')
+                    ->label('Tienda')
                     ->relationship('store', 'name')
                     ->required()
                     ->visible(Auth::user()?->is_super_admin)
                     ->columnSpanFull(),
                 TextInput::make('customer_name')
-                    ->label('Full Name')
+                    ->label('Nombre completo')
                     ->required()
                     ->columnSpan(2),
                 TextInput::make('customer_phone')
-                    ->label('WhatsApp Number')
+                    ->label('Número de WhatsApp')
                     ->tel()
                     ->required()
                     ->columnSpan(2),
                 Textarea::make('delivery_address_or_location')
-                    ->label('Delivery Address / Service Location')
+                    ->label('Dirección de entrega o lugar del servicio')
                     ->rows(3)
                     ->columnSpanFull(),
                 TextInput::make('product_service_name')
-                    ->label('Product / Service Name')
+                    ->label('Producto o servicio')
                     ->columnSpan(2),
                 TextInput::make('sale_value')
-                    ->label('Sale Value')
+                    ->label('Valor de la venta')
                     ->numeric()
                     ->helperText('Se resuelve solo del catálogo si coincide con "Product / Service Name" — ajústalo aquí si es distinto (precio negociado, varios productos, etc.).')
                     ->columnSpan(2),
                 TextInput::make('preferred_date_time')
-                    ->label('Preferred Date & Time')
-                    ->hint('For services: preferred booking date/time')
+                    ->label('Fecha y hora preferidas')
+                    ->hint('Para servicios: fecha y hora preferidas de la reserva')
                     ->columnSpan(2),
                 Textarea::make('summary')
-                    ->label('Order Summary')
+                    ->label('Resumen del pedido')
                     ->rows(4)
                     ->required()
                     ->columnSpanFull(),
                 Select::make('order_status')
-                    ->label('Order Status')
+                    ->label('Estado del pedido')
                     ->options(Lead::ORDER_STATUSES)
                     ->helperText('Confirmado/Enviado se marcan solos; marca Entregado o Devuelto manualmente cuando corresponda.')
                     ->columnSpan(2),
                 TextInput::make('tracking_number')
-                    ->label('Tracking Number')
+                    ->label('Número de guía')
                     ->columnSpan(1),
                 TextInput::make('carrier')
-                    ->label('Carrier')
+                    ->label('Transportadora')
                     ->columnSpan(1),
                 Toggle::make('needs_address_review')
-                    ->label('Needs Address Review')
-                    ->helperText('Flagged automatically when the delivery address seems to be missing a city/region.')
+                    ->label('Requiere revisar la dirección')
+                    ->helperText('Se marca automáticamente cuando parece faltar la ciudad o región en la dirección de entrega.')
                     ->columnSpanFull(),
                 Toggle::make('is_processed')
-                    ->label('Mark as Processed')
-                    ->hint('Toggle when the lead has been successfully handled')
+                    ->label('Marcar como procesado')
+                    ->hint('Actívalo cuando el lead se haya atendido con éxito')
                     ->columnSpanFull(),
                 Toggle::make('bot_active')
-                    ->label('Bot Active for this Client')
-                    ->helperText('Disable this to handle the conversation manually.')
+                    ->label('Bot activo para este cliente')
+                    ->helperText('Desactívalo para atender la conversación manualmente.')
                     ->default(true)
                     ->columnSpanFull(),
                 Placeholder::make('recent_conversation')
-                    ->label('Recent Conversation')
+                    ->label('Conversación reciente')
                     ->content(function ($record) {
                         if (!$record) {
                             return view('filament.components.chat-history', [

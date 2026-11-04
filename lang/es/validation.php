@@ -1,0 +1,48 @@
+<?php
+
+// The messages of the admin panel (see UsePanelLocale), for the fields without their own.
+return [
+    'accepted' => 'Debes aceptar :attribute.',
+    'array' => ':attribute debe ser una lista.',
+    'boolean' => ':attribute debe ser verdadero o falso.',
+    'confirmed' => 'La confirmación de :attribute no coincide.',
+    'date' => ':attribute no es una fecha válida.',
+    'distinct' => ':attribute tiene un valor repetido.',
+    'email' => ':attribute debe ser un correo electrónico válido.',
+    'exists' => 'El valor elegido en :attribute no es válido.',
+    'file' => ':attribute debe ser un archivo.',
+    'image' => ':attribute debe ser una imagen.',
+    'in' => 'El valor elegido en :attribute no es válido.',
+    'integer' => ':attribute debe ser un número entero.',
+    'json' => ':attribute debe ser un JSON válido.',
+    'max' => [
+        'array' => ':attribute no puede tener más de :max elementos.',
+        'file' => ':attribute no puede superar :max kilobytes.',
+        'numeric' => ':attribute no puede ser mayor que :max.',
+        'string' => ':attribute no puede superar :max caracteres.',
+    ],
+    'mimes' => ':attribute debe ser un archivo de tipo: :values.',
+    'mimetypes' => ':attribute debe ser un archivo de tipo: :values.',
+    'min' => [
+        'array' => ':attribute debe tener al menos :min elementos.',
+        'file' => ':attribute debe tener al menos :min kilobytes.',
+        'numeric' => ':attribute debe ser al menos :min.',
+        'string' => ':attribute debe tener al menos :min caracteres.',
+    ],
+    'numeric' => ':attribute debe ser un número.',
+    'password' => [
+        'letters' => ':attribute debe incluir al menos una letra.',
+        'mixed' => ':attribute debe incluir mayúsculas y minúsculas.',
+        'numbers' => ':attribute debe incluir al menos un número.',
+        'symbols' => ':attribute debe incluir al menos un símbolo.',
+        'uncompromised' => 'Esta :attribute apareció en una filtración de datos. Elige otra.',
+    ],
+    'regex' => 'El formato de :attribute no es válido.',
+    'required' => ':attribute es obligatorio.',
+    'required_if' => ':attribute es obligatorio.',
+    'required_with' => ':attribute es obligatorio cuando se indica :values.',
+    'same' => ':attribute debe coincidir con :other.',
+    'string' => ':attribute debe ser un texto.',
+    'unique' => 'Ese valor de :attribute ya está en uso.',
+    'url' => ':attribute debe ser una URL válida.',
+];

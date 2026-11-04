@@ -30,14 +30,17 @@ class KnowledgeSourcesTable
                 TextColumn::make('purpose')
                     ->label('Uso')
                     ->badge()
-                    ->formatStateUsing(fn (string $state, KnowledgeSource $record) => $state === KnowledgeSource::PURPOSE_COMMERCIAL
-                        ? ($record->delivery === KnowledgeSource::DELIVERY_VERBATIM ? 'Comercial (literal)' : 'Comercial')
-                        : 'Conocimiento'),
+                    ->formatStateUsing(fn (string $state, KnowledgeSource $record) => match ($state) {
+                        KnowledgeSource::PURPOSE_COMMERCIAL => $record->delivery === KnowledgeSource::DELIVERY_VERBATIM ? 'Comercial (literal)' : 'Comercial',
+                        KnowledgeSource::PURPOSE_SAMPLE => $record->delivery === KnowledgeSource::DELIVERY_VERBATIM ? 'Muestra (literal)' : 'Muestra',
+                        default => 'Conocimiento',
+                    }),
                 TextColumn::make('version')
                     ->label('Versión'),
                 TextColumn::make('status')
                     ->label('Estado')
                     ->badge()
+                    ->formatStateUsing(fn (string $state) => $state === KnowledgeSource::STATUS_ACTIVE ? 'Activa' : 'Retirada')
                     ->color(fn (string $state) => $state === KnowledgeSource::STATUS_ACTIVE ? 'success' : 'gray'),
                 TextColumn::make('chunks_count')
                     ->label('Fragmentos')
@@ -54,7 +57,7 @@ class KnowledgeSourcesTable
                     ->options([KnowledgeSource::STATUS_ACTIVE => 'Activa', KnowledgeSource::STATUS_RETIRED => 'Retirada']),
                 SelectFilter::make('purpose')
                     ->label('Uso')
-                    ->options([KnowledgeSource::PURPOSE_KNOWLEDGE => 'Conocimiento', KnowledgeSource::PURPOSE_COMMERCIAL => 'Comercial']),
+                    ->options([KnowledgeSource::PURPOSE_KNOWLEDGE => 'Conocimiento', KnowledgeSource::PURPOSE_COMMERCIAL => 'Comercial', KnowledgeSource::PURPOSE_SAMPLE => 'Muestra']),
             ])
             ->recordActions([
                 // Retired sources stop being retrieved but keep their history.

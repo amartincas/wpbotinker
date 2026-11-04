@@ -23,7 +23,7 @@
         </div>
     @else
         <div class="flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200 p-8 text-center">
-            <p class="text-gray-500 text-sm">No conversation history available yet.</p>
+            <p class="text-gray-500 text-sm">Todavía no hay historial de conversación.</p>
         </div>
     @endif
 </div>

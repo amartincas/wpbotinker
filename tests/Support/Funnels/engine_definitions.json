@@ -1,0 +1,1531 @@
+[
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "primera",
+                "type": "ai",
+                "goal": "OBJETIVO-primera",
+                "instructions": "INSTRUCCIONES-primera",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            },
+            {
+                "key": "segunda",
+                "type": "ai",
+                "goal": "OBJETIVO-segunda",
+                "instructions": "INSTRUCCIONES-segunda",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "primera",
+                "type": "ai",
+                "goal": "OBJETIVO-primera",
+                "instructions": "INSTRUCCIONES-primera",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "any_reply": true
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "segunda"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "segunda",
+                "type": "ai",
+                "goal": "OBJETIVO-segunda",
+                "instructions": "INSTRUCCIONES-segunda",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "primera",
+                "type": "ai",
+                "goal": "OBJETIVO-primera",
+                "instructions": "INSTRUCCIONES-primera",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            },
+            {
+                "key": "segunda",
+                "type": "ai",
+                "goal": "OBJETIVO-segunda",
+                "instructions": "INSTRUCCIONES-segunda",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "start_stage": "segunda"
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "primera",
+                "type": "ai",
+                "goal": "OBJETIVO-primera",
+                "instructions": "INSTRUCCIONES-primera",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "vieja",
+                "type": "ai",
+                "goal": "OBJETIVO-vieja",
+                "instructions": "INSTRUCCIONES-vieja",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "any_reply": true
+                        },
+                        "then": {
+                            "action": "stay"
+                        }
+                    }
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "nueva",
+                "type": "ai",
+                "goal": "OBJETIVO-nueva",
+                "instructions": "INSTRUCCIONES-nueva",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "OBJETIVO-a",
+                "instructions": "INSTRUCCIONES-a",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            },
+            {
+                "key": "b",
+                "type": "ai",
+                "goal": "OBJETIVO-b",
+                "instructions": "INSTRUCCIONES-b",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "start_stage": "b"
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "OBJETIVO-a",
+                "instructions": "INSTRUCCIONES-a",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            },
+            {
+                "key": "b",
+                "type": "ai",
+                "goal": "OBJETIVO-b",
+                "instructions": "NUEVAS-INSTRUCCIONES",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 3
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 3
+        },
+        "opening_consumes_free_reply": false
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 0
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "intent": "comprar"
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "cierre"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "any_reply": true
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "cierre"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "max_interactions": 2,
+                "on_limit": "cierre"
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "any_reply": true
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "aviso"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "aviso",
+                "type": "message",
+                "goal": "OBJETIVO-aviso",
+                "instructions": "INSTRUCCIONES-aviso",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "text": "TEXTO-LITERAL",
+                "next": "cierre"
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "pregunta",
+                "type": "message",
+                "goal": "OBJETIVO-pregunta",
+                "instructions": "INSTRUCCIONES-pregunta",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "text": "¿Para qué lo necesitas?",
+                "next": "dudas"
+            },
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "OBJETIVO-a",
+                "instructions": "INSTRUCCIONES-a",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "vuelta"
+                            ]
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "b"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "b",
+                "type": "ai",
+                "goal": "OBJETIVO-b",
+                "instructions": "INSTRUCCIONES-b",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "vuelta"
+                            ]
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "a"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Avanzar ahora"
+                            ]
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "cierre"
+                        }
+                    },
+                    {
+                        "when": {
+                            "intent": "objecion",
+                            "min_confidence": 0.7
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "objeciones"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "objeciones",
+                "type": "ai",
+                "goal": "OBJETIVO-objeciones",
+                "instructions": "INSTRUCCIONES-objeciones",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "simple",
+                "type": "ai",
+                "goal": "OBJETIVO-simple",
+                "instructions": "INSTRUCCIONES-simple",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "demo",
+                "type": "ai",
+                "goal": "OBJETIVO-demo",
+                "instructions": "INSTRUCCIONES-demo",
+                "context": [
+                    "sample_content"
+                ],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "demo",
+                "type": "ai",
+                "goal": "OBJETIVO-demo",
+                "instructions": "INSTRUCCIONES-demo",
+                "context": [
+                    "sample_content"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "demo",
+                "type": "ai",
+                "goal": "OBJETIVO-demo",
+                "instructions": "INSTRUCCIONES-demo",
+                "context": [],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "todo",
+                "type": "ai",
+                "goal": "OBJETIVO-todo",
+                "instructions": "INSTRUCCIONES-todo",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources",
+                    "sample_content"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "minima",
+                "type": "ai",
+                "goal": "OBJETIVO-minima",
+                "instructions": "INSTRUCCIONES-minima",
+                "context": []
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true
+            },
+            {
+                "key": "venta",
+                "type": "ai",
+                "goal": "OBJETIVO-venta",
+                "instructions": "INSTRUCCIONES-venta",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2,
+            "on_exhausted": "venta"
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "venta",
+                "type": "ai",
+                "goal": "OBJETIVO-venta",
+                "instructions": "INSTRUCCIONES-venta",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 1
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true,
+                "rules": [
+                    {
+                        "when": {
+                            "free_replies_exhausted": true
+                        },
+                        "then": {
+                            "action": "show_offer"
+                        }
+                    }
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 1
+        },
+        "offer_cta": "LLAMADO-CONFIGURADO"
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 3
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true,
+                "rules": [
+                    {
+                        "when": {
+                            "intent": "comprar"
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    }
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        },
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Quiero mi acceso"
+                            ]
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    },
+                    {
+                        "when": {
+                            "plan_named": true
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    },
+                    {
+                        "when": {
+                            "intent": "comprar",
+                            "min_confidence": 0.8
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    },
+                    {
+                        "when": {
+                            "intent": "objecion",
+                            "min_confidence": 0.8
+                        },
+                        "then": {
+                            "action": "show_offer"
+                        }
+                    }
+                ]
+            }
+        ],
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ],
+        "offer_cta": "Escribe QUIERO MI ACCESO"
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "OBJETIVO-a",
+                "instructions": "INSTRUCCIONES-a",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 9
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "OBJETIVO-a",
+                "instructions": "INSTRUCCIONES-a",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender recetas",
+        "stages": [
+            {
+                "key": "probar",
+                "type": "ai",
+                "goal": "Mostrar una receta",
+                "instructions": "Da una receta sencilla.",
+                "context": [
+                    "sample_content"
+                ],
+                "uses_free_replies": true
+            },
+            {
+                "key": "vender",
+                "type": "ai",
+                "goal": "Ofrecer el recetario",
+                "instructions": "Invita a comprar.",
+                "context": [
+                    "description"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "any_reply": true
+                        },
+                        "then": {
+                            "action": "show_offer"
+                        }
+                    }
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 2,
+            "on_exhausted": "vender"
+        },
+        "offer_cta": "Escribe pagar para cocinar"
+    },
+    {
+        "name": "Embudo",
+        "goal": "Inscribir alumnos",
+        "stages": [
+            {
+                "key": "nivel",
+                "type": "message",
+                "goal": "OBJETIVO-nivel",
+                "instructions": "INSTRUCCIONES-nivel",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "text": "¿Cuál es tu nivel de inglés?",
+                "next": "asesoria"
+            },
+            {
+                "key": "asesoria",
+                "type": "ai",
+                "goal": "Recomendar",
+                "instructions": "Relaciona su nivel con el curso.",
+                "context": [
+                    "description",
+                    "faq",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Me inscribo"
+                            ]
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    },
+                    {
+                        "when": {
+                            "intent": "dudar",
+                            "min_confidence": 0.7
+                        },
+                        "then": {
+                            "action": "go_to",
+                            "stage": "objeciones"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "objeciones",
+                "type": "ai",
+                "goal": "Resolver la objeción",
+                "instructions": "Responde sin presionar.",
+                "context": [
+                    "commercial_resources"
+                ],
+                "max_interactions": 1,
+                "on_limit": "asesoria"
+            }
+        ],
+        "intents": [
+            {
+                "key": "dudar",
+                "description": "Duda de inscribirse"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Ver opciones"
+                            ]
+                        },
+                        "then": {
+                            "action": "show_offer",
+                            "stage": "cierre"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Quiero mi acceso"
+                            ]
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "gratis",
+                "type": "ai",
+                "goal": "OBJETIVO-gratis",
+                "instructions": "INSTRUCCIONES-gratis",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "uses_free_replies": true,
+                "rules": [
+                    {
+                        "when": {
+                            "intent": "comprar"
+                        },
+                        "then": {
+                            "action": "start_payment"
+                        }
+                    }
+                ]
+            }
+        ],
+        "free_replies": {
+            "limit": 3
+        },
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "dudas",
+                "type": "ai",
+                "goal": "OBJETIVO-dudas",
+                "instructions": "INSTRUCCIONES-dudas",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ],
+                "rules": [
+                    {
+                        "when": {
+                            "phrase": [
+                                "Quiero mi acceso"
+                            ]
+                        },
+                        "then": {
+                            "action": "start_payment",
+                            "stage": "cierre"
+                        }
+                    },
+                    {
+                        "when": {
+                            "intent": "comprar",
+                            "min_confidence": 0.8
+                        },
+                        "then": {
+                            "action": "start_payment",
+                            "stage": "cierre"
+                        }
+                    }
+                ]
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "OBJETIVO-cierre",
+                "instructions": "INSTRUCCIONES-cierre",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ],
+        "intents": [
+            {
+                "key": "comprar",
+                "description": "Quiere adquirir el servicio"
+            },
+            {
+                "key": "objecion",
+                "description": "Duda del valor"
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "OBJETIVO-EMBUDO",
+        "stages": [
+            {
+                "key": "nueva",
+                "type": "ai",
+                "goal": "OBJETIVO-nueva",
+                "instructions": "INSTRUCCIONES-nueva",
+                "context": [
+                    "description",
+                    "faq",
+                    "topic",
+                    "commercial_resources"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "b",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "c",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "a",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ],
+        "free_replies": {
+            "limit": 2,
+            "on_exhausted": "a"
+        }
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "inicio",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "otra",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "nueva",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ]
+    },
+    {
+        "name": "Embudo",
+        "goal": "Vender",
+        "stages": [
+            {
+                "key": "inicio",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            },
+            {
+                "key": "cierre",
+                "type": "ai",
+                "goal": "Conversar",
+                "instructions": "Responde."
+            }
+        ],
+        "free_replies": {
+            "limit": 2
+        }
+    }
+]

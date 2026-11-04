@@ -28,7 +28,7 @@ class LeadsTable
             ))
             ->columns([
                 TextColumn::make('store.name')
-                    ->label('Store Name')
+                    ->label('Tienda')
                     ->searchable()
                     ->sortable()
                     ->visible(Auth::user()?->is_super_admin),
@@ -52,7 +52,7 @@ class LeadsTable
                     ->since()
                     ->sortable(),
                 TextColumn::make('order_status')
-                    ->label('Order Status')
+                    ->label('Estado del pedido')
                     ->badge()
                     ->formatStateUsing(fn (?string $state) => $state ? (Lead::ORDER_STATUSES[$state] ?? $state) : '—')
                     ->color(fn (?string $state) => match ($state) {
@@ -64,7 +64,7 @@ class LeadsTable
                     })
                     ->sortable(),
                 IconColumn::make('needs_address_review')
-                    ->label('Address')
+                    ->label('Dirección')
                     ->boolean()
                     ->trueIcon('heroicon-o-exclamation-triangle')
                     ->falseIcon('heroicon-o-check-circle')
@@ -72,20 +72,20 @@ class LeadsTable
                     ->falseColor('success')
                     ->tooltip(fn (bool $state) => $state ? 'Falta ciudad/región — confirmar con el cliente' : 'Dirección completa'),
                 ToggleColumn::make('is_processed')
-                    ->label('Processed')
+                    ->label('Procesado')
                     ->sortable(),
             ])
             ->filters([
                 TernaryFilter::make('is_processed')
-                    ->label('Processed Status')
-                    ->placeholder('All')
-                    ->trueLabel('Processed')
-                    ->falseLabel('Not Processed'),
+                    ->label('Estado de procesamiento')
+                    ->placeholder('Todos')
+                    ->trueLabel('Procesado')
+                    ->falseLabel('Sin procesar'),
                 SelectFilter::make('store_id')
                     ->relationship('store', 'name')
-                    ->label('Store'),
+                    ->label('Tienda'),
                 SelectFilter::make('order_status')
-                    ->label('Order Status')
+                    ->label('Estado del pedido')
                     ->options(Lead::ORDER_STATUSES),
             ])
             ->defaultSort('created_at', 'desc')

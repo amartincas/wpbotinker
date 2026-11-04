@@ -24,27 +24,27 @@ class UsersTable
                     ->sortable()
                     ->copyable(),
                 TextColumn::make('store.name')
-                    ->label('Store Name')
+                    ->label('Tienda')
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('created_at')
-                    ->label('Created')
+                    ->label('Creado')
                     ->dateTime()
                     ->sortable(),
                 ToggleColumn::make('is_super_admin')
-                    ->label('Super Admin')
+                    ->label('Superadministrador')
                     ->sortable(),
             ])
             ->filters([
                 SelectFilter::make('store_id')
                     ->relationship('store', 'name')
-                    ->label('Store'),
+                    ->label('Tienda'),
                 SelectFilter::make('is_super_admin')
                     ->options([
-                        1 => 'Super Admins',
-                        0 => 'Regular Users',
+                        1 => 'Superadministradores',
+                        0 => 'Usuarios normales',
                     ])
-                    ->label('User Type'),
+                    ->label('Tipo de usuario'),
             ])
             ->defaultSort('created_at', 'desc')
             ->recordActions([

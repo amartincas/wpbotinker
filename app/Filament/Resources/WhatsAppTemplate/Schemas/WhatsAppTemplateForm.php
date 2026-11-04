@@ -87,8 +87,8 @@ class WhatsAppTemplateForm
                 ->columnSpanFull(),
 
             Toggle::make('requires_phone_input')
-                ->label('Request Phone Number')
-                ->helperText('Enable this for templates intended for new contacts not yet in the chat list.')
+                ->label('Solicitar número de teléfono')
+                ->helperText('Actívalo en plantillas para contactos nuevos que aún no están en la lista de chats.')
                 ->onColor('success')
                 ->offColor('gray')
                 ->default(false)

@@ -11,8 +11,10 @@ use App\Platform\Commerce\CommercialClaims;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Knowledge\KnowledgeFile;
 use App\Platform\Knowledge\KnowledgeIngestor;
+use App\Services\SampleContentGuard;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -53,7 +55,7 @@ class CreateKnowledgeSource extends CreateRecord
         }
 
         $purpose = (string) ($data['purpose'] ?? KnowledgeSource::PURPOSE_KNOWLEDGE);
-        $delivery = $purpose === KnowledgeSource::PURPOSE_COMMERCIAL ? (string) ($data['delivery'] ?? KnowledgeSource::DELIVERY_REFERENCE) : KnowledgeSource::DELIVERY_REFERENCE;
+        $delivery = in_array($purpose, [KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::PURPOSE_SAMPLE], true) ? (string) ($data['delivery'] ?? KnowledgeSource::DELIVERY_REFERENCE) : KnowledgeSource::DELIVERY_REFERENCE;
 
         // A verbatim resource reaches the customer as written: it may not
         // state prices or amounts, which only the product's plans give.
@@ -62,21 +64,31 @@ class CreateKnowledgeSource extends CreateRecord
         }
 
         try {
-            $source = app(KnowledgeIngestor::class)->ingest(
-                $store,
-                $domainKey,
-                $product,
-                filled($data['title'] ?? null) ? $data['title'] : pathinfo($fileName, PATHINFO_FILENAME),
-                KnowledgeFile::typeFor($fileName),
-                $content,
-                filled($data['origin'] ?? null) ? $data['origin'] : mb_substr("upload:{$fileName}", 0, 191),
-                $data['license'] ?? null,
-                (string) ($data['language'] ?? 'es'),
-                $purpose,
-                $delivery,
-            );
-        } catch (InvalidArgumentException $e) {
-            throw ValidationException::withMessages(['data.file' => "{$fileName}: {$e->getMessage()}"]);
+            // In one transaction: a sample refused leaves the previous version active.
+            $source = DB::transaction(function () use ($store, $domainKey, $product, $data, $fileName, $content, $purpose, $delivery) {
+                $source = app(KnowledgeIngestor::class)->ingest(
+                    $store,
+                    $domainKey,
+                    $product,
+                    filled($data['title'] ?? null) ? $data['title'] : pathinfo($fileName, PATHINFO_FILENAME),
+                    KnowledgeFile::typeFor($fileName),
+                    $content,
+                    filled($data['origin'] ?? null) ? $data['origin'] : mb_substr("upload:{$fileName}", 0, 191),
+                    $data['license'] ?? null,
+                    (string) ($data['language'] ?? 'es'),
+                    $purpose,
+                    $delivery,
+                );
+
+                if ($purpose === KnowledgeSource::PURPOSE_SAMPLE && ($refusal = app(SampleContentGuard::class)->refusalFor($source)) !== null) {
+                    throw ValidationException::withMessages(['data.file' => "{$fileName}: {$refusal}"]);
+                }
+
+                return $source;
+            });
+        } catch (InvalidArgumentException) {
+            // Type, use, topic and product were checked above: what is left is a file without text.
+            throw ValidationException::withMessages(['data.file' => "{$fileName}: el archivo no tiene texto que se pueda usar."]);
         }
 
         return $source;

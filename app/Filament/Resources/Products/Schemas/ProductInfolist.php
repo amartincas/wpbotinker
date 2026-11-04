@@ -12,7 +12,7 @@ class ProductInfolist
         return $schema
             ->components([
                 TextEntry::make('store.name')
-                    ->label('Store'),
+                    ->label('Tienda'),
                 TextEntry::make('name'),
                 TextEntry::make('description')
                     ->columnSpanFull(),
@@ -29,21 +29,21 @@ class ProductInfolist
                     ->numeric()
                     ->label(function ($record) {
                         return $record?->type === 'service'
-                            ? 'Availability'
-                            : 'Stock Quantity';
+                            ? 'Disponibilidad'
+                            : 'Cantidad en existencias';
                     }),
                 TextEntry::make('ai_sales_strategy')
-                    ->label('AI Sales Strategy')
+                    ->label('Estrategia de servicio de la IA')
                     ->columnSpanFull()
-                    ->placeholder('Not set'),
+                    ->placeholder('Sin definir'),
                 TextEntry::make('faq_context')
-                    ->label('FAQ & Operational Context')
+                    ->label('Preguntas frecuentes y contexto operativo')
                     ->columnSpanFull()
-                    ->placeholder('Not set'),
+                    ->placeholder('Sin definir'),
                 TextEntry::make('required_customer_info')
-                    ->label('Required Lead Data')
+                    ->label('Datos requeridos del lead')
                     ->columnSpanFull()
-                    ->placeholder('Not set'),
+                    ->placeholder('Sin definir'),
                 TextEntry::make('created_at')
                     ->dateTime()
                     ->placeholder('-'),

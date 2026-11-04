@@ -31,7 +31,7 @@ class CustomRegister extends Register
     {
         return TextInput::make('store_name')
             ->label(__('Nombre de la Tienda'))
-            ->hint(__('The name of your WhatsApp Bot Store'))
+            ->hint(__('El nombre de tu tienda de WhatsApp'))
             ->required()
             ->maxLength(255);
     }

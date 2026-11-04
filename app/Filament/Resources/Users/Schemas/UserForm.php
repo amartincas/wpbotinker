@@ -26,18 +26,18 @@ class UserForm
                     ->revealable()
                     ->required(fn (string $operation) => $operation === 'create')
                     ->hidden(fn (string $operation) => $operation === 'edit')
-                    ->helperText('Password for the user account'),
+                    ->helperText('Contraseña de la cuenta del usuario'),
                 Select::make('store_id')
                     ->relationship('store', 'name')
                     ->required()
-                    ->label('Assign Store')
+                    ->label('Asignar tienda')
                     ->searchable()
                     ->preload()
                     ->native(false)
                     ->disabled(fn (string $operation) => $operation === 'edit'),
                 Checkbox::make('is_super_admin')
-                    ->label('Grant Superuser Access')
-                    ->helperText('Superusers can manage all stores, users, products, and leads.'),
+                    ->label('Conceder acceso de superadministrador')
+                    ->helperText('Los superadministradores pueden administrar todas las tiendas, usuarios, productos y leads.'),
             ]);
     }
 }

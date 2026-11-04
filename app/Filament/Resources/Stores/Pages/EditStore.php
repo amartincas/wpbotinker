@@ -27,9 +27,9 @@ class EditStore extends EditRecord
     {
         return [
             Action::make('test_connection')
-                ->label('Test Connection')
+                ->label('Probar conexión')
                 ->icon('heroicon-m-signal')
-                ->tooltip('Test WhatsApp API Connection')
+                ->tooltip('Probar la conexión con la API de WhatsApp')
                 ->hidden(fn () => !$this->record->wa_phone_number_id || !$this->record->wa_access_token)
                 ->action(function () {
                     $result = WhatsAppService::testConnection(
@@ -53,7 +53,7 @@ class EditStore extends EditRecord
                         session()->put('store_connection_tested_at', now());
                     } else {
                         Notification::make()
-                            ->title('✗ Connection Failed')
+                            ->title('✗ La conexión falló')
                             ->body($result['message'])
                             ->danger()
                             ->icon('heroicon-o-x-circle')

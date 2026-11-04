@@ -22,21 +22,21 @@ class UnprocessedLeadsStats extends BaseWidget
         $processedCount = $totalCount - $unprocessedCount;
 
         return [
-            Stat::make('Unprocessed Leads', $unprocessedCount)
-                ->description('Leads awaiting follow-up')
+            Stat::make('Leads sin procesar', $unprocessedCount)
+                ->description('Leads pendientes de seguimiento')
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->color('warning')
                 ->url(LeadResource::getUrl('index', [
                     'tableFilters' => ['is_processed' => ['value' => false]],
                 ])),
 
-            Stat::make('Processed Leads', $processedCount)
-                ->description('Successfully handled leads')
+            Stat::make('Leads procesados', $processedCount)
+                ->description('Leads atendidos con éxito')
                 ->descriptionIcon('heroicon-m-check-circle')
                 ->color('success'),
 
-            Stat::make('Total Leads', $totalCount)
-                ->description('All leads combined')
+            Stat::make('Total de leads', $totalCount)
+                ->description('Todos los leads')
                 ->descriptionIcon('heroicon-m-document')
                 ->color('info'),
         ];

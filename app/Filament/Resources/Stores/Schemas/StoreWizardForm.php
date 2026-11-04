@@ -27,20 +27,20 @@ class StoreWizardForm
             ->components([
                 // === WEBHOOK CONFIGURATION ===
                 TextInput::make('wa_verify_token')
-                    ->label('Verify Token')
-                    ->helperText('This is your webhook verify token. Use this in Meta Developers Console > Webhook Settings.')
+                    ->label('Token de verificación')
+                    ->helperText('Es el token de verificación de tu webhook. Úsalo en Meta Developers Console > Webhook Settings.')
                     ->reactive()
                     ->columnSpanFull(),
 
                 TextInput::make('wa_app_secret')
-                    ->label('App Secret')
+                    ->label('Secreto de la aplicación (App Secret)')
                     ->password()
                     ->revealable()
                     ->helperText('From Meta for Developers > this store\'s App > Settings > Basic > App Secret. Required to verify incoming webhook requests are really from Meta — without it, webhooks from this store are rejected.')
                     ->columnSpanFull(),
 
                 TextInput::make('webhook_url')
-                    ->label('Webhook URL')
+                    ->label('URL del webhook')
                     //->disabled()
                     ->dehydrated(false)
                     ->formatStateUsing(function ($state, $record) {
@@ -51,58 +51,58 @@ class StoreWizardForm
                         $baseUrl = env('APP_URL');
                         return "{$baseUrl}/api/whatsapp/webhook/{$token}";
                     })
-                    ->helperText('Copy this URL to Meta Developers Console > Webhook Settings > Callback URL')
+                    ->helperText('Copia esta URL en Meta Developers Console > Webhook Settings > Callback URL.')
                     ->columnSpanFull(),
 
                 // === API CREDENTIALS ===
                 TextInput::make('wa_phone_number_id')
-                    ->label('Phone Number ID')
+                    ->label('ID del número de teléfono')
                     ->required()
                     // A number routes to exactly one store (also a unique index).
                     ->unique(ignoreRecord: true)
-                    ->helperText('Found in Meta > Settings > Phone Numbers. Format: 123456789')
+                    ->helperText('Está en Meta > Settings > Phone Numbers. Formato: 123456789')
                     ->placeholder('e.g., 123456789')
                     ->columnSpan(1),
 
                 TextInput::make('wa_business_account_id')
-                    ->label('WABA ID (Business Account)')
-                    ->helperText('Found in Meta > Settings > Business Accounts. Format: waid_1234567890')
+                    ->label('ID de WABA (cuenta de negocio)')
+                    ->helperText('Está en Meta > Settings > Business Accounts. Formato: waid_1234567890')
                     ->placeholder('e.g., waid_1234567890')
                     ->columnSpan(1),
 
                 TextInput::make('wa_access_token')
-                    ->label('Access Token')
+                    ->label('Token de acceso')
                     ->required()
                     ->password()
                     ->revealable()
-                    ->helperText('Generate in Meta Developers > My Apps > System User Access Tokens')
+                    ->helperText('Se genera en Meta Developers > My Apps > System User Access Tokens.')
                     ->placeholder('eaa...')
                     ->columnSpanFull(),
 
                 // === CONVERSIONS API (META) ===
                 TextInput::make('meta_dataset_id')
-                    ->label('Meta Dataset ID')
-                    ->helperText('Conversions API dataset id for WhatsApp Business Messaging. Leave empty to disable CAPI for this store.')
+                    ->label('ID del conjunto de datos de Meta')
+                    ->helperText('ID del conjunto de datos de la API de Conversiones para WhatsApp Business. Déjalo vacío para desactivar CAPI en esta tienda.')
                     ->columnSpanFull(),
 
                 TextInput::make('meta_capi_access_token')
-                    ->label('Conversions API Access Token')
+                    ->label('Token de acceso de la API de Conversiones')
                     ->password()
                     ->revealable()
-                    ->helperText('Access token with whatsapp_business_management / whatsapp_business_manage_events permissions (encrypted)')
+                    ->helperText('Token de acceso con permisos whatsapp_business_management y whatsapp_business_manage_events (cifrado).')
                     ->columnSpanFull(),
 
                 TextInput::make('meta_capi_currency')
-                    ->label('Currency')
+                    ->label('Moneda')
                     ->placeholder('e.g. COP, USD')
                     ->required(fn (Get $get) => filled($get('meta_dataset_id')))
-                    ->helperText('ISO currency code this store sells in. Required to send the Purchase conversion event — no default is assumed.')
+                    ->helperText('Código ISO de la moneda en que vende esta tienda. Es necesario para enviar el evento de compra; no se asume ninguna por defecto.')
                     ->columnSpan(1),
 
                 TextInput::make('alert_phone')
-                    ->label('Admin Alert Phone')
+                    ->label('Teléfono de alertas del administrador')
                     ->placeholder('e.g. 573001234567')
-                    ->helperText('WhatsApp number (with country code, no "+") that receives a message whenever a new lead is created for this store. Leave empty to disable the alert.')
+                    ->helperText('Número de WhatsApp (con indicativo, sin «+») que recibe un mensaje cada vez que se crea un lead en esta tienda. Déjalo vacío para desactivar la alerta.')
                     ->columnSpanFull(),
 
                 Select::make('conversation_mode')
@@ -147,19 +147,19 @@ class StoreWizardForm
 
                 // === AI PERSONA ===
                 Select::make('personality_type')
-                    ->label('Persona Type')
+                    ->label('Tipo de personalidad')
                     ->options([
                         'vendedor' => 'Sales Representative (Vendedor)',
                         'soporte' => 'Support Agent (Soporte)',
-                        'asesor' => 'Business Advisor (Asesor)',
+                        'asesor' => 'Asesor de negocios',
                     ])
                     ->required()
-                    ->helperText('Select the personality that best matches your use case.')
+                    ->helperText('Elige la personalidad que mejor se ajuste a tu caso.')
                     ->reactive()
                     ->columnSpan(1),
 
                 Select::make('ai_provider')
-                    ->label('AI Provider')
+                    ->label('Proveedor de IA')
                     ->options([
                         'openai' => 'ChatGPT (OpenAI)',
                         'grok' => 'Grok',
@@ -168,11 +168,11 @@ class StoreWizardForm
                     ->default('openai')
                     ->required()
                     ->reactive()
-                    ->helperText('Select your AI provider')
+                    ->helperText('Elige tu proveedor de IA')
                     ->columnSpan(1),
 
                 Select::make('ai_model')
-                    ->label('AI Model')
+                    ->label('Modelo de IA')
                     ->options(function (Get $get) {
                         $models = AIServiceFactory::enabledModels($get('ai_provider'));
 
@@ -184,15 +184,15 @@ class StoreWizardForm
                     ->required()
                     ->reactive()
                     ->live()
-                    ->helperText('Choose the model for your AI responses.')
+                    ->helperText('Elige el modelo para las respuestas de la IA.')
                     ->columnSpanFull(),
 
                 TextInput::make('ai_api_key')
-                    ->label('OpenAI API Key')
+                    ->label('Clave de API de OpenAI')
                     ->required()
                     ->password()
                     ->revealable()
-                    ->helperText('Your OpenAI API key from https://platform.openai.com/api-keys (encrypted in database)')
+                    ->helperText('Tu clave de API de OpenAI, de https://platform.openai.com/api-keys (cifrada en la base de datos).')
                     ->placeholder('sk-...')
                     ->columnSpanFull(),
 
@@ -200,7 +200,7 @@ class StoreWizardForm
                     ->label('System Prompt')
                     ->required()
                     ->rows(6)
-                    ->helperText('This prompt defines how the AI behaves. It was auto-filled based on your persona selection.')
+                    ->helperText('Este prompt define cómo se comporta la IA. Se completó automáticamente según la personalidad elegida.')
                     ->columnSpanFull()
                     ->default(function (Get $get) {
                         $personality = $get('personality_type');

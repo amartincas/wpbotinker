@@ -22,6 +22,12 @@ class StoreResource extends Resource
 {
     protected static ?string $model = Store::class;
 
+    protected static ?string $navigationLabel = 'Tiendas';
+
+    protected static ?string $modelLabel = 'tienda';
+
+    protected static ?string $pluralModelLabel = 'tiendas';
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::BuildingLibrary;
 
     public static function getEloquentQuery(): Builder

@@ -48,7 +48,7 @@ class ProductForm
                     ->required()
                     ->default(Auth::user()?->store_id),
                 TextInput::make('id')
-                    ->label('Image IDs (for AI image references)')
+                    ->label('ID de imágenes (para que la IA las referencie)')
                     ->disabled()
                     ->dehydrated(false)
                     ->formatStateUsing(function ($record) {
@@ -67,7 +67,7 @@ class ProductForm
                         // uploaded image gets its own distinct tag here.
                         return $imageIds->map(fn ($id) => "[IMG:{$id}]")->implode(', ');
                     })
-                    ->helperText('Reference one of these exact tags in system prompts or AI responses to display that specific image. Each image has its own tag — this is NOT the product ID above.')
+                    ->helperText('Usa una de estas etiquetas exactas en el prompt del sistema o en las respuestas de la IA para mostrar esa imagen. Cada imagen tiene su etiqueta; no es el ID del producto indicado arriba.')
                     ->columnSpanFull(),
                 TextInput::make('name')
                     ->required(),
@@ -80,8 +80,8 @@ class ProductForm
                     ->prefix('$'),
                 ToggleButtons::make('type')
                     ->options([
-                        'product' => 'Product',
-                        'service' => 'Service',
+                        'product' => 'Producto',
+                        'service' => 'Servicio',
                     ])
                     ->default('product')
                     ->required()
@@ -92,25 +92,25 @@ class ProductForm
                     ->default(0)
                     ->label(function (Get $get): string {
                         return $get('type') === 'service'
-                            ? 'Availability (1 = Accepting Clients, 0 = Fully Booked)'
-                            : 'Stock Quantity';
+                            ? 'Disponibilidad (1 = recibe clientes, 0 = sin cupo)'
+                            : 'Cantidad en existencias';
                     })
                     ->helperText(function (Get $get): string {
                         return $get('type') === 'service'
-                            ? 'Enter 1 if accepting new clients, 0 if fully booked'
-                            : 'Enter the number of units in stock';
+                            ? 'Escribe 1 si recibe clientes nuevos, 0 si no tiene cupo'
+                            : 'Escribe el número de unidades en existencias';
                     }),
                 Textarea::make('ai_sales_strategy')
-                    ->label('AI Sales Strategy')
-                    ->placeholder('How should the AI sell this product? E.g., "Emphasize quality over price" or "Focus on limited availability"...')
+                    ->label('Estrategia de servicio de la IA')
+                    ->placeholder('¿Cómo debe atender la IA este producto? Ej.: «Destaca la calidad sobre el precio» o «Enfócate en la disponibilidad limitada»...')
                     ->columnSpanFull(),
                 Textarea::make('faq_context')
-                    ->label('FAQ & Operational Context')
-                    ->placeholder('Rules, cities served, employees, FAQs specific to this product...')
+                    ->label('Preguntas frecuentes y contexto operativo')
+                    ->placeholder('Reglas, ciudades atendidas, empleados, preguntas frecuentes de este producto...')
                     ->columnSpanFull(),
                 TextInput::make('required_customer_info')
-                    ->label('Required Lead Data')
-                    ->placeholder('E.g., Full name, phone, delivery address, preferred date...')
+                    ->label('Datos requeridos del lead')
+                    ->placeholder('Ej.: nombre completo, teléfono, dirección de entrega, fecha preferida...')
                     ->columnSpanFull(),
                 TagsInput::make('meta_ad_ids')
                     ->label('IDs de anuncios de Meta (Click-to-WhatsApp)')
@@ -233,14 +233,14 @@ class ProductForm
 
                 // === PRODUCT GALLERY ===
                 FileUpload::make('images')
-                    ->label('Product Images')
+                    ->label('Imágenes del producto')
                     ->multiple()
                     ->reorderable()
                     ->directory('products')
                     ->disk('public')
                     ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
                     ->maxSize(5120) // 5MB max per image
-                    ->helperText('Upload multiple images (JPG, PNG, WebP). The first image will be used as primary.')
+                    ->helperText('Sube varias imágenes (JPG, PNG, WebP). La primera se usará como principal.')
                     ->columnSpanFull()
                     // Load existing images from the relationship
                     ->formatStateUsing(fn ($record) => $record?->images()->pluck('image_path')->toArray() ?? [])

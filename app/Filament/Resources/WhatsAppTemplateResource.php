@@ -20,6 +20,10 @@ class WhatsAppTemplateResource extends Resource
 {
     protected static ?string $model = WhatsAppTemplate::class;
 
+    protected static ?string $modelLabel = 'plantilla de WhatsApp';
+
+    protected static ?string $pluralModelLabel = 'plantillas de WhatsApp';
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::DocumentDuplicate;
 
     protected static ?string $navigationLabel = 'Plantillas WA';

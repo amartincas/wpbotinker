@@ -19,6 +19,10 @@ class LeadResource extends Resource
 {
     protected static ?string $model = Lead::class;
 
+    protected static ?string $modelLabel = 'lead';
+
+    protected static ?string $pluralModelLabel = 'leads';
+
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-document';
 
     protected static ?string $navigationLabel = 'Leads';

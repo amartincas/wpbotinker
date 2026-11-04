@@ -24,7 +24,7 @@ class StoresTable
                 TextColumn::make('ai_model')
                     ->searchable(),
                 TextColumn::make('ai_api_key')
-                    ->label('AI API Key')
+                    ->label('Clave de API de IA')
                     ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('wa_phone_number_id')
                     ->searchable(),

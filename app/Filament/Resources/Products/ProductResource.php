@@ -4,7 +4,10 @@ namespace App\Filament\Resources\Products;
 
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
+use App\Filament\Resources\Products\Pages\EditProductFunnel;
 use App\Filament\Resources\Products\Pages\ListProducts;
+use App\Filament\Resources\Products\Pages\ManageProductFunnel;
+use App\Filament\Resources\Products\Pages\ViewFunnelVersion;
 use App\Filament\Resources\Products\Pages\ViewProduct;
 use App\Filament\Resources\Products\Schemas\ProductForm;
 use App\Filament\Resources\Products\Schemas\ProductInfolist;
@@ -21,6 +24,12 @@ use Illuminate\Support\Facades\Auth;
 class ProductResource extends Resource
 {
     protected static ?string $model = Product::class;
+
+    protected static ?string $navigationLabel = 'Productos';
+
+    protected static ?string $modelLabel = 'producto';
+
+    protected static ?string $pluralModelLabel = 'productos';
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
 
@@ -60,6 +69,10 @@ class ProductResource extends Resource
             'create' => CreateProduct::route('/create'),
             'view' => ViewProduct::route('/{record}'),
             'edit' => EditProduct::route('/{record}/edit'),
+            'funnel' => ManageProductFunnel::route('/{record}/funnel'),
+            // Before the version's route, which would take "edit" as a version.
+            'funnel-edit' => EditProductFunnel::route('/{record}/funnel/edit'),
+            'funnel-version' => ViewFunnelVersion::route('/{record}/funnel/{version}'),
         ];
     }
 }

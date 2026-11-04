@@ -2,6 +2,10 @@
 
 namespace App\Providers\Filament;
 
+use App\Http\Middleware\UsePanelLocale;
+use Filament\Forms\Components\Field;
+use Filament\Infolists\Components\Entry;
+use Filament\Tables\Columns\Column;
 use App\Filament\Pages\Auth\CustomRegister;
 use App\Filament\Pages\Dashboard;
 use Filament\Http\Middleware\Authenticate;
@@ -23,6 +27,14 @@ use Illuminate\Support\Facades\Route;
 
 class YesPanelProvider extends PanelProvider
 {
+    /** Labels a component generates from its name are translated through lang/es.json. */
+    public function boot(): void
+    {
+        Field::configureUsing(fn (Field $field) => $field->translateLabel());
+        Entry::configureUsing(fn (Entry $entry) => $entry->translateLabel());
+        Column::configureUsing(fn (Column $column) => $column->translateLabel());
+    }
+
     public function panel(Panel $panel): Panel
     {
         return $panel
@@ -55,6 +67,8 @@ class YesPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
+            // Persistent: Livewire's own requests need the same language.
+            ->middleware([UsePanelLocale::class], isPersistent: true)
             ->authMiddleware([
                 Authenticate::class,
             ])

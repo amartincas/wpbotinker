@@ -30,7 +30,7 @@ class StoreForm
                     ->rule('in:openai,grok,gemini')
                     ->reactive(),
                 Select::make('ai_model')
-                    ->label('AI Model')
+                    ->label('Modelo de IA')
                     ->required()
                     ->rule('string')
                     ->options(function (Get $get) {
@@ -42,61 +42,61 @@ class StoreForm
                     ->rule(fn (Get $get) => Rule::in(AIServiceFactory::enabledModels($get('ai_provider'))))
                     ->reactive(),
                 TextInput::make('ai_api_key')
-                    ->label('AI API Key')
+                    ->label('Clave de API de IA')
                     ->password()
                     ->revealable()
                     ->required()
                     ->rule('string')
                     ->rule('min:20')
                     ->columnSpanFull()
-                    ->helperText('API key for the selected AI provider (encrypted). Must be at least 20 characters'),
+                    ->helperText('Clave de API del proveedor de IA elegido (cifrada). Debe tener al menos 20 caracteres.'),
                 TextInput::make('wa_phone_number_id')
-                    ->label('Phone Number ID')
+                    ->label('ID del número de teléfono')
                     ->required()
                     // A number routes to exactly one store (also a unique index).
                     ->unique(ignoreRecord: true)
                     ->columnSpanFull(),
                 TextInput::make('wa_business_account_id')
-                    ->label('WABA ID (Business Account)')
+                    ->label('ID de WABA (cuenta de negocio)')
                     ->columnSpanFull(),
                 TextInput::make('wa_access_token')
-                    ->label('Access Token')
+                    ->label('Token de acceso')
                     ->password()
                     ->revealable()
                     ->required()
                     ->columnSpanFull()
-                    ->helperText('WhatsApp Business API access token from Meta'),
+                    ->helperText('Token de acceso de la API de WhatsApp Business, de Meta'),
                 TextInput::make('wa_verify_token')
-                    ->label('Verify Token')
+                    ->label('Token de verificación')
                     ->required()
                     ->columnSpanFull()
-                    ->helperText('Verify token for webhook setup'),
+                    ->helperText('Token de verificación para configurar el webhook'),
                 TextInput::make('wa_app_secret')
-                    ->label('App Secret')
+                    ->label('Secreto de la aplicación (App Secret)')
                     ->password()
                     ->revealable()
                     ->columnSpanFull()
                     ->helperText('From Meta for Developers > this store\'s App > Settings > Basic > App Secret. Required to verify incoming webhook requests are really from Meta (X-Hub-Signature-256) — without it, webhooks from this store are rejected.'),
                 TextInput::make('meta_dataset_id')
-                    ->label('Meta Dataset ID')
+                    ->label('ID del conjunto de datos de Meta')
                     ->columnSpanFull()
-                    ->helperText('Conversions API dataset id, from Meta Events Manager. Leave empty to disable CAPI for this store.'),
+                    ->helperText('ID del conjunto de datos de la API de Conversiones, en Meta Events Manager. Déjalo vacío para desactivar CAPI en esta tienda.'),
                 TextInput::make('meta_capi_access_token')
-                    ->label('Conversions API Access Token')
+                    ->label('Token de acceso de la API de Conversiones')
                     ->password()
                     ->revealable()
                     ->columnSpanFull()
-                    ->helperText('Access token generated in Meta Events Manager for this dataset (encrypted)'),
+                    ->helperText('Token de acceso generado en Meta Events Manager para este conjunto de datos (cifrado).'),
                 TextInput::make('meta_capi_currency')
-                    ->label('Currency')
+                    ->label('Moneda')
                     ->placeholder('e.g. COP, USD')
                     ->required(fn (Get $get) => filled($get('meta_dataset_id')))
-                    ->helperText('ISO currency code this store sells in (e.g. COP, USD). Required to send the Purchase conversion event — no default is assumed, since different stores price in different currencies.'),
+                    ->helperText('Código ISO de la moneda en que vende esta tienda (ej.: COP, USD). Es necesario para enviar el evento de compra; no se asume ninguna por defecto, porque cada tienda puede vender en una moneda distinta.'),
                 TextInput::make('alert_phone')
-                    ->label('Admin Alert Phone')
+                    ->label('Teléfono de alertas del administrador')
                     ->placeholder('e.g. 573001234567')
                     ->columnSpanFull()
-                    ->helperText('WhatsApp number (with country code, no "+") that receives a message whenever a new lead is created for this store. Leave empty to disable the alert.'),
+                    ->helperText('Número de WhatsApp (con indicativo, sin «+») que recibe un mensaje cada vez que se crea un lead en esta tienda. Déjalo vacío para desactivar la alerta.'),
                 Select::make('conversation_mode')
                     ->label('Modo de conversación')
                     ->options([
