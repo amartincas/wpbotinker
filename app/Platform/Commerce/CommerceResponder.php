@@ -39,6 +39,42 @@ class CommerceResponder
 
     private const INTENT_PAY = 'pay';
 
+    /** Wants to buy and also has a question: asked first, no payment starts. */
+    private const INTENT_CLARIFY = 'clarify';
+
+    /**
+     * The payment terms that are actions. The others ("suscripción",
+     * "membresía") only name the thing: "¿la suscripción se renueva sola?"
+     * talks about it without asking to buy it. "Pago" can be either: see
+     * paysAsAction().
+     */
+    private const PURCHASE_VERBS = ['pagar', 'suscribirme', 'suscribir', 'suscribo', 'renovar', 'renuevo', 'comprar', 'compro', 'contratar', 'adquirir'];
+
+    /** "Pago" after one of these is the noun ("el pago de…"), not the action ("¿cómo pago…?"). */
+    private const PAYMENT_NOUN = '/\b(?:el|del|al|un|mi|tu|su|este|ese|de|sin|ningun|otro)\s+pago\b/';
+
+    /** The noun used as an action: "quiero hacer el pago". */
+    private const PAYMENT_ACTION = '/\b(?:hacer|hago|realizar|realizo|efectuar|efectuo)\s+(?:(?:el|un|mi)\s+)?pago\b/';
+
+    /** Asking how the service or the payment is, not asking to buy it. */
+    private const CONSULTATION = '/\b(?:incluyen?|incluido|funcionan?|consiste|sirven?|beneficios?|ventajas?|diferencias?|obtengo|obtener|recibo|recibir|recomiendas?|renueva|seguros?|segura|seguridad|confiables?)\b|\b(?:es|son)\s+(?:el|los|mi|mis)\s+pagos?\b/';
+
+    /** The customer says there is something to resolve first. */
+    private const DOUBT = '/\b(?:dudas?|preguntas?|antes de)\b/';
+
+    /** Words of a doubt, which say nothing about what is being bought. */
+    private const DOUBT_WORDS = ['pero', 'tengo', 'duda', 'dudas', 'pregunta', 'preguntas', 'antes', 'incluye', 'incluyen', 'funciona', 'funcionan', 'seguro', 'segura'];
+
+    private const NEGATION = '/\b(?:no|nunca)\s+(?:quiero|quisiera|deseo|voy a|pienso|necesito|puedo|me interesa)\b|\b(?:todavia|aun)\s+no\b/';
+
+    /** The customer states the wish: "quiero…", as opposed to asking about it. */
+    private const WISH = '/\b(?:quiero|quisiera|deseo|voy a|necesito|me gustaria|me interesa|prefiero|elijo|tomo)\b/';
+
+    /** A message that opens as a question about something ("¿qué pasa si…?"), which "¿cómo pago?" does not. */
+    private const QUESTION = '/^\W*(?:que|cuales?|para que|por que|si)\b/';
+
+    private const CHOOSING_WORDS = ['plan', 'planes', 'interesa', 'prefiero', 'elijo', 'tomo'];
+
     /** Commercial terms by intent; the first intent with a term present wins. */
     private const TERMS = [
         self::INTENT_STATUS => ['estado', 'comprobante', 'pague', 'pagado', 'transferi', 'consigne'],
@@ -92,6 +128,11 @@ class CommerceResponder
                     : $this->reply($product, "Responde con el número del plan que quieres:\n".$this->planLines($plans));
             }
 
+            // The plan may also be chosen by its name, when only one fits.
+            if ($product && preg_match(self::NEGATION, $text) !== 1 && ($named = $this->namedPlans($text, $this->plans($product)))->count() === 1) {
+                return $this->startPayment($store, $conversation, $customer, $product, $named->first());
+            }
+
             $conversation->update(['pending_state' => null]);
         }
 
@@ -106,7 +147,8 @@ class CommerceResponder
         return match ($intent) {
             self::INTENT_STATUS => $this->reply($target, $this->statusText($customer, $target)),
             self::INTENT_PRICES => $this->pricesReply($conversation, $customer, $target),
-            self::INTENT_PAY => $this->pay($store, $conversation, $customer, $target),
+            self::INTENT_PAY => $this->pay($store, $conversation, $customer, $target, $text),
+            self::INTENT_CLARIFY => $this->reply($target, 'Claro. Cuéntame tu duda y te ayudo. Cuando quieras pagar, escribe «pagar».'),
         };
     }
 
@@ -233,7 +275,12 @@ class CommerceResponder
         return $this->reply($product, $this->subscriptionLine($customer, $product).$this->offerText($product));
     }
 
-    private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product): CommerceReply
+    /**
+     * Starts the payment of the plan the message names, or of the only one
+     * when it names none. A plan named that cannot be told for certain
+     * (several fit, or none) is never guessed: the customer chooses.
+     */
+    private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product, string $text): CommerceReply
     {
         $open = $this->openPayment($customer, $product);
 
@@ -247,7 +294,13 @@ class CommerceResponder
             return $this->reply($product, "Por ahora no es posible pagar «{$product->name}» por este medio. Escríbenos más tarde.");
         }
 
-        if ($plans->count() === 1) {
+        $named = $this->namedPlans($text, $plans);
+
+        if ($named->count() === 1) {
+            return $this->startPayment($store, $conversation, $customer, $product, $named->first());
+        }
+
+        if ($plans->count() === 1 && $named->isEmpty() && ! $this->mentionsPlan($text)) {
             return $this->startPayment($store, $conversation, $customer, $product, $plans->first());
         }
 
@@ -371,31 +424,121 @@ class CommerceResponder
      * "estado de mi pago") or (b) it names what the term refers to: the
      * subscription, a plan, or the product itself ("quiero pagar la
      * Lectura"). So "¿debería comprar una casa?" is a service question.
+     *
+     * Referring to the product is not asking to buy it, though: a question
+     * about it ("¿qué incluye la suscripción?") is no request and follows
+     * the conversation, a wish to buy with a doubt asks first, and only an
+     * explicit wish to buy reaches the payment.
      */
     private function intent(string $text, Product $product): ?string
     {
         $words = array_values(array_diff(preg_split('/[^a-z0-9]+/', $text, -1, PREG_SPLIT_NO_EMPTY), self::FILLER));
         $terms = array_merge(...array_values(self::TERMS));
         $objects = [...self::OBJECTS, ...$this->productWords($product)];
+        $named = $this->namedPlans($text, $this->plans($product));
+        $negated = preg_match(self::NEGATION, $text) === 1;
+        $wish = preg_match(self::WISH, $text) === 1;
+        $consults = preg_match(self::CONSULTATION, $text) === 1;
+        $doubts = preg_match(self::DOUBT, $text) === 1;
+
+        // "Quiero el semanal": choosing a plan by its name needs no other word.
+        if ($wish && ! $negated && ! $consults && ! $doubts && $named->isNotEmpty()
+            && array_diff($words, self::CHOOSING_WORDS, $this->planWords($named)) === []) {
+            return self::INTENT_PAY;
+        }
 
         if (array_intersect($words, $terms) === []) {
             return null;
         }
 
         $allCommercial = array_diff($words, $terms, $objects) === [];
-        $namesObject = array_intersect($words, $objects) !== [];
+        $namesObject = array_intersect($words, $objects) !== [] || $named->isNotEmpty() || $this->mentionsPlan($text);
+        $verb = array_intersect($words, self::PURCHASE_VERBS) !== [] || (in_array('pago', $words, true) && $this->paysAsAction($text));
+
+        if ($verb && $wish && ! $negated && ($consults || $doubts)
+            && ($namesObject || array_diff($words, $terms, $objects, self::DOUBT_WORDS) === [])) {
+            return self::INTENT_CLARIFY;
+        }
 
         if (! $allCommercial && ! $namesObject) {
             return null;
         }
 
-        foreach (self::TERMS as $intent => $intentTerms) {
-            if (array_intersect($words, $intentTerms) !== []) {
-                return $intent;
-            }
+        if (array_intersect($words, self::TERMS[self::INTENT_STATUS]) !== []) {
+            return self::INTENT_STATUS;
         }
 
-        return null;
+        if (array_intersect($words, array_diff(self::TERMS[self::INTENT_PRICES], ['plan', 'planes'])) !== []) {
+            return self::INTENT_PRICES;
+        }
+
+        if ($consults || $doubts) {
+            return null;
+        }
+
+        if (! $verb && array_intersect($words, ['plan', 'planes']) !== []) {
+            return self::INTENT_PRICES;
+        }
+
+        if ($negated) {
+            return null;
+        }
+
+        if (! $verb) {
+            return $allCommercial ? self::INTENT_PAY : null;
+        }
+
+        $forPaying = preg_match('/\bpara\s+(?:'.implode('|', self::PURCHASE_VERBS).')\b/', $text) === 1;
+
+        return preg_match(self::QUESTION, $text) === 1 && ! $wish && ! $forPaying ? null : self::INTENT_PAY;
+    }
+
+    /** Whether "pago" in the message is the action ("¿cómo pago…?", "hacer el pago"), not the noun ("el pago de…"). */
+    private function paysAsAction(string $text): bool
+    {
+        return preg_match(self::PAYMENT_ACTION, $text) === 1 || preg_match(self::PAYMENT_NOUN, $text) !== 1;
+    }
+
+    /**
+     * The plans the message names, by their stored name. When one name is
+     * inside another ("Mensual" and "Mensual premium"), the longer one wins.
+     *
+     * @param  Collection<int, Plan>  $plans
+     * @return Collection<int, Plan>
+     */
+    private function namedPlans(string $text, Collection $plans): Collection
+    {
+        $text = preg_replace('/[^a-z0-9]+/', ' ', $text);
+        $matches = $plans->filter(fn (Plan $plan) => $this->planName($plan) !== '' && preg_match('/\b'.preg_quote($this->planName($plan), '/').'\b/', $text) === 1);
+
+        return $matches->reject(fn (Plan $plan) => $matches->contains(
+            fn (Plan $other) => $other->id !== $plan->id && $this->planName($other) !== $this->planName($plan) && str_contains($this->planName($other), $this->planName($plan))
+        ))->values();
+    }
+
+    /** "plan semanal" refers to a plan; "plan de comidas" or "mi plan" does not say which one. */
+    private function mentionsPlan(string $text): bool
+    {
+        preg_match_all('/\bplan(?:es)?\s+([a-z0-9]+)/', $text, $matches);
+
+        return array_diff($matches[1], self::FILLER) !== [];
+    }
+
+    /** The plan's name to look for in a message: without the word "plan" when it says more. */
+    private function planName(Plan $plan): string
+    {
+        $name = trim(preg_replace('/[^a-z0-9]+/', ' ', $this->normalize((string) $plan->name)));
+
+        return preg_replace('/^plan(?:es)?\s+(?=\S)/', '', $name);
+    }
+
+    /**
+     * @param  Collection<int, Plan>  $plans
+     * @return list<string>
+     */
+    private function planWords(Collection $plans): array
+    {
+        return $plans->flatMap(fn (Plan $plan) => explode(' ', $this->planName($plan)))->values()->all();
     }
 
     /**

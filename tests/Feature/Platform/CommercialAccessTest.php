@@ -653,6 +653,205 @@ describe('commercial requests vs service questions', function () {
 
         expect(c2Text())->toStartWith('Tu suscripción a «Lectura» está activa hasta el');
     });
+
+    it('treats a question about the product or the subscription as a question, not a purchase', function (string $message, bool $subscribed) {
+        if ($subscribed) {
+            c2Subscribe($this->customer, $this->reading);
+        }
+
+        c2Job($this->store, $message);
+
+        expect(Payment::count())->toBe(0)
+            ->and(c2Text())->not->toContain('INSTRUCCIONES-PAGO')
+            ->and(c2Text())->not->toContain('Cuéntame tu duda');
+    })->with([
+        '¿Qué incluye la suscripción?',
+        '¿Cómo funciona la suscripción?',
+        '¿Cómo funciona el plan mensual?',
+        '¿Qué incluye el plan?',
+        '¿La suscripción se renueva sola?',
+        '¿Qué más obtengo si me suscribo a la Lectura?',
+        '¿Qué pasa si no pago la suscripción?',
+        '¿El pago de la suscripción es seguro?',
+        '¿Es seguro pagar la suscripción?',
+        '¿Cuándo es el pago de la suscripción?',
+        '¿Cómo es el pago de la suscripción?',
+        '¿Cómo funciona el pago?',
+        'Tengo una duda antes de pagar',
+        'Tengo una duda de la Lectura antes de pagar',
+        'Tengo una duda sobre la suscripción antes de pagar',
+        'No quiero pagar la suscripción',
+        'Todavía no quiero comprar la Lectura',
+        'Quiero comprar un plan de comidas',
+    ])->with(['subscribed' => true, 'not subscribed' => false]);
+
+    it('starts the payment on an explicit purchase', function (string $message) {
+        c2Job($this->store, $message);
+
+        expect(Payment::sole()->plan_name)->toBe('Mensual')
+            ->and(c2Text())->toContain('INSTRUCCIONES-PAGO')
+            ->and(mainChatRequests())->toBe([]);
+    })->with([
+        'Quiero comprar el plan mensual',
+        'Quiero pagar la suscripción mensual',
+        'Quiero comprar la Lectura para mi hermano',
+        'Hola, quiero comprar la Lectura por favor',
+        'Quiero el mensual',
+        'Me interesa el plan mensual',
+        '¿Qué debo hacer para pagar la suscripción?',
+        '¿Cómo pago el plan?',
+        '¿Cómo pago la suscripción?',
+        'Quiero pagar la suscripción',
+        'Quiero hacer el pago',
+        'Quiero hacer el pago de la Lectura hoy',
+        'Pago la suscripción',
+    ]);
+
+    it('asks first when the wish to buy comes with a doubt', function (string $message) {
+        c2Job($this->store, $message);
+
+        expect(Payment::count())->toBe(0)
+            ->and(c2Text())->toBe('Claro. Cuéntame tu duda y te ayudo. Cuando quieras pagar, escribe «pagar».')
+            ->and(mainChatRequests())->toBe([]);
+    })->with([
+        'Quiero pagar, pero tengo una duda',
+        'Quiero comprar la Lectura, pero ¿qué incluye?',
+        'Quiero suscribirme, tengo una pregunta',
+        'Quiero pagar la suscripción, ¿es seguro?',
+        'Quiero pagar, ¿es seguro?',
+    ]);
+
+    it('does not take a debt or another purchase with a doubt for the product', function () {
+        c2Job($this->store, 'Quiero pagar mis deudas, pero tengo una duda');
+
+        expect(Payment::count())->toBe(0)->and(c2Text())->not->toContain('Cuéntame tu duda');
+    });
+
+    it('answers the price of a plan as a price question', function () {
+        c2Job($this->store, '¿Cuánto cuesta el plan mensual?');
+
+        expect(Payment::count())->toBe(0)->and(c2Text())->toContain('Planes de «Lectura»:');
+    });
+});
+
+describe('choosing a plan by its stored data', function () {
+    beforeEach(function () {
+        config(['botinker.free_interactions.max' => 0]);
+        $this->reading->update(['sample_instructions' => null, 'sample_capability_key' => null]);
+        $this->customer = c2BirthDate($this->store);
+        fakeExternalApis('Lectura completa.');
+    });
+
+    it('never assumes a plan from what a word usually means', function () {
+        $this->monthly->update(['name' => 'Mes']);
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::count())->toBe(0)
+            ->and(c2Text())->toContain('¿Qué plan de «Lectura» quieres?')
+            ->toContain('1. Mes: $20.000 COP por 30 días')
+            ->toContain('2. Semanal: $8.000 COP por 7 días');
+    });
+
+    it('asks to confirm the only plan when the plan named is not it', function () {
+        $this->monthly->update(['name' => 'Mes']);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+        expect(Payment::count())->toBe(0)->and(c2Text())->toContain('¿Qué plan de «Lectura» quieres?');
+
+        c2Job($this->store, '1');
+        expect(Payment::sole()->plan_name)->toBe('Mes');
+    });
+
+    it('starts the plan named, by its name', function (string $message, string $plan) {
+        $this->monthly->update(['name' => 'Mes']);
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+
+        c2Job($this->store, $message);
+
+        expect(Payment::sole()->plan_name)->toBe($plan);
+    })->with([
+        ['Quiero el semanal', 'Semanal'],
+        ['Quiero comprar el plan semanal', 'Semanal'],
+        ['Quiero comprar el plan Mes', 'Mes'],
+        ['Quiero pagar un mes de la Lectura', 'Mes'],
+    ]);
+
+    it('takes the amount from the plan, not from the message', function () {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+
+        c2Job($this->store, 'Quiero comprar el plan semanal por 1000');
+
+        expect((float) Payment::sole()->amount)->toBe(8000.0);
+    });
+
+    it('asks when more than one plan fits', function () {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Plan Mensual', 'price' => 25000]);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::count())->toBe(0)->and(c2Text())->toContain('¿Qué plan de «Lectura» quieres?');
+    });
+
+    it('prefers the longer name when one is inside another', function () {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Mensual premium', 'price' => 50000]);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual premium');
+
+        expect(Payment::sole()->plan_name)->toBe('Mensual premium');
+    });
+
+    it('ignores an inactive plan', function () {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7, 'is_active' => false]);
+
+        c2Job($this->store, 'Quiero comprar el plan semanal');
+
+        expect(Payment::count())->toBe(0)->and(c2Text())->toContain('¿Qué plan de «Lectura» quieres?')->not->toContain('Semanal');
+    });
+
+    it('accepts the name or the number when choosing', function (string $choice, string $plan) {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+
+        c2Job($this->store, 'pagar');
+        expect(Payment::count())->toBe(0);
+
+        c2Job($this->store, $choice);
+
+        expect(Payment::sole()->plan_name)->toBe($plan);
+    })->with([
+        ['2', 'Semanal'],
+        ['Semanal', 'Semanal'],
+        ['El mensual', 'Mensual'],
+    ]);
+
+    it('shows the open payment instead of starting another', function () {
+        Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+        c2Job($this->store, 'Quiero comprar el plan semanal');
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::sole()->plan_name)->toBe('Semanal')->and(c2Text())->toContain('plan Semanal');
+    });
+
+    it('starts nothing without active plans or payment instructions', function (Closure $setup) {
+        $setup->call($this);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::count())->toBe(0)->and(c2Text())->toContain('no es posible pagar');
+    })->with([
+        'no active plans' => [fn () => $this->monthly->update(['is_active' => false])],
+        'no payment instructions' => [fn () => $this->store->update(['payment_instructions' => null])],
+    ]);
+
+    it('lets a subscriber renew the plan named, as before', function () {
+        c2Subscribe($this->customer, $this->reading);
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::sole()->plan_name)->toBe('Mensual');
+    });
 });
 
 describe('ambiguous ads in the sales flow', function () {
