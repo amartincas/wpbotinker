@@ -86,6 +86,17 @@ class Product extends Model
             if (filled($product->sample_capability_key) && blank($product->sample_instructions)) {
                 throw new InvalidArgumentException('A sample capability needs sample instructions.');
             }
+
+            if ($product->isDirty('active_sales_funnel_id') && $product->active_sales_funnel_id !== null
+                && SalesFunnel::find($product->active_sales_funnel_id)?->product_id !== $product->id) {
+                throw new InvalidArgumentException("Version [{$product->active_sales_funnel_id}] does not belong to product [{$product->id}].");
+            }
+        });
+
+        // The product and its versions reference each other: the reference is
+        // dropped first, so removing them does not depend on the order.
+        static::deleting(function (self $product) {
+            static::query()->whereKey($product->id)->toBase()->update(['active_sales_funnel_id' => null]);
         });
     }
 
@@ -144,6 +155,18 @@ class Product extends Model
     public function plans(): HasMany
     {
         return $this->hasMany(Plan::class);
+    }
+
+    /** Every published version of its sales funnel. */
+    public function salesFunnels(): HasMany
+    {
+        return $this->hasMany(SalesFunnel::class);
+    }
+
+    /** The version running; none: the product works without a funnel. */
+    public function activeSalesFunnel(): BelongsTo
+    {
+        return $this->belongsTo(SalesFunnel::class, 'active_sales_funnel_id');
     }
 
     /**
