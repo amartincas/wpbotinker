@@ -106,13 +106,30 @@ class Product extends Model
     }
 
     /**
-     * Every subscription product gives the Core's free replies (none when
-     * the global limit is 0). Its sample instructions, when configured,
-     * only adapt them to the domain.
+     * Every subscription product gives the free replies of its active funnel
+     * or, without one, the Core's (none when the limit is 0). Its sample
+     * instructions, when configured, only adapt them to the domain.
      */
     public function offersSample(): bool
     {
-        return $this->requiresSubscription() && SampleLedger::limit() > 0;
+        return $this->requiresSubscription() && SampleLedger::limit($this) > 0;
+    }
+
+    /**
+     * The funnel version running now, or null: follows the column, so a
+     * version activated after loading the relation is never missed.
+     */
+    public function activeFunnel(): ?SalesFunnel
+    {
+        if ($this->active_sales_funnel_id === null) {
+            return null;
+        }
+
+        if ($this->activeSalesFunnel?->id !== (int) $this->active_sales_funnel_id) {
+            $this->load('activeSalesFunnel');
+        }
+
+        return $this->activeSalesFunnel;
     }
 
     /**

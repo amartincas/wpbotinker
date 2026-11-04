@@ -19,10 +19,17 @@ use Illuminate\Support\Facades\Log;
  */
 class SampleLedger
 {
-    /** The Core's global number of free replies per customer and product (0: none). */
-    public static function limit(): int
+    /**
+     * Free replies per customer and product (0: none): what the product's
+     * active funnel configures, or the Core's global number without one.
+     */
+    public static function limit(?Product $product = null): int
     {
-        return max(0, (int) config('botinker.free_interactions.max', 3));
+        $funnel = $product?->activeFunnel();
+
+        return $funnel !== null
+            ? $funnel->funnelDefinition()->freeRepliesLimit
+            : max(0, (int) config('botinker.free_interactions.max', 3));
     }
 
     /**
@@ -47,7 +54,7 @@ class SampleLedger
 
             $locked = SampleDelivery::whereKey($delivery->id)->lockForUpdate()->first();
 
-            if ($locked === null || $locked->turns_used >= self::limit()) {
+            if ($locked === null || $locked->turns_used >= self::limit($product)) {
                 return null;
             }
 

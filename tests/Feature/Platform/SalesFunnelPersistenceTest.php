@@ -46,7 +46,7 @@ function sfProduct(Store $store, string $name, array $overrides = []): Product
 
 function sfDefinition(array $keys = ['inicio', 'cierre'], array $extra = []): array
 {
-    return array_merge(['name' => 'Embudo', 'stages' => array_map(fn (string $key) => ['key' => $key, 'type' => 'ai'], $keys)], $extra);
+    return array_merge(['name' => 'Embudo', 'goal' => 'Vender', 'stages' => array_map(fn (string $key) => ['key' => $key, 'type' => 'ai', 'goal' => 'Conversar', 'instructions' => 'Responde.'], $keys)], $extra);
 }
 
 function sfConversation(Store $store, string $phone = '573001112233'): Conversation
@@ -580,7 +580,9 @@ describe('collisions while saving a state', function () {
     });
 
     it('does not touch the free replies while retrying', function () {
-        $sample = sfSample($this->product, 2);
+        // Given before this funnel, which gives none: the record stays.
+        $this->versions->deactivate($this->product);
+        $sample = sfSample($this->product->fresh(), 2);
         $before = $sample->fresh()->getAttributes();
         ConversationFunnelState::creating(function () {
             if (++$this->attempts === 1) {
@@ -628,11 +630,17 @@ describe('products without a funnel', function () {
             ->and($decision->sampleAvailable)->toBeTrue();
     });
 
-    it('do not change their access decision with a funnel either, in this phase', function () {
+    it('follow the free replies of the funnel once they have one, and the global ones again without it', function () {
         $customer = Customer::create(['store_id' => $this->store->id, 'customer_phone' => '573001112233']);
+        $gate = app(AccessGate::class);
+
+        $this->versions->publish($this->product, sfDefinition(extra: ['free_replies' => ['limit' => 2]]));
+        expect($gate->decide($customer, $this->product->fresh())->sampleAvailable)->toBeTrue();
 
         $this->versions->publish($this->product, sfDefinition());
+        expect($gate->decide($customer, $this->product->fresh())->sampleAvailable)->toBeFalse();
 
-        expect(app(AccessGate::class)->decide($customer, $this->product->fresh())->sampleAvailable)->toBeTrue();
+        $this->versions->deactivate($this->product);
+        expect($gate->decide($customer, $this->product->fresh())->sampleAvailable)->toBeTrue();
     });
 });

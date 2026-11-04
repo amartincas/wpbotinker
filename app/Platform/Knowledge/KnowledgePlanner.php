@@ -78,6 +78,21 @@ class KnowledgePlanner
     }
 
     /**
+     * The sample content (authorized for customers without access) that fits
+     * the message, guided by the topic's guide when it has one. Choosing none
+     * is a valid answer.
+     *
+     * @param  array<string, mixed>  $facts  fact key => value the domain may read
+     */
+    public function planSample(Store $store, DomainModule $domain, Product $product, string $message, array $facts): KnowledgePlan
+    {
+        $guide = $domain instanceof ProvidesRetrievalGuide ? $domain->retrievalGuide() : '';
+
+        return $this->select($store, $domain, $product, $message, $facts, KnowledgeSource::PURPOSE_SAMPLE,
+            self::TOPIC_GUIDE, $guide, self::MESSAGE_REQUEST, false);
+    }
+
+    /**
      * @param  array<string, mixed>  $facts
      */
     private function select(Store $store, DomainModule $domain, ?Product $product, string $message, array $facts, string $purpose, string $guideLabel, string $guide, string $responseType, bool $sourcesRequired): KnowledgePlan

@@ -25,7 +25,10 @@ class KnowledgeSource extends Model
     /** Sales resources of a product (or of every product of the topic): CommercialAdvisor only. */
     public const PURPOSE_COMMERCIAL = 'commercial';
 
-    public const PURPOSES = [self::PURPOSE_KNOWLEDGE, self::PURPOSE_COMMERCIAL];
+    /** Authorized for free replies and demonstrations of a funnel (see KnowledgeAccess). */
+    public const PURPOSE_SAMPLE = 'sample';
+
+    public const PURPOSES = [self::PURPOSE_KNOWLEDGE, self::PURPOSE_COMMERCIAL, self::PURPOSE_SAMPLE];
 
     /** The AI may word it, never beyond what it says. */
     public const DELIVERY_REFERENCE = 'reference';

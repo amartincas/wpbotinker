@@ -51,7 +51,7 @@ class AccessGate
             ->first();
 
         $sampleAvailable = $product->offersSample()
-            && (int) SampleDelivery::where('customer_id', $customer->id)->where('product_id', $product->id)->value('turns_used') < SampleLedger::limit();
+            && (int) SampleDelivery::where('customer_id', $customer->id)->where('product_id', $product->id)->value('turns_used') < SampleLedger::limit($product);
 
         return AccessDecision::deny($reason, $subscription, $openPayment, $sampleAvailable);
     }

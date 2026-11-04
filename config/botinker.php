@@ -81,4 +81,23 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Sales funnels
+    |--------------------------------------------------------------------------
+    |
+    | How the model converses in any funnel's stage, for every product and
+    | domain. What to sell and how is each funnel's configuration, not this.
+    |
+    */
+
+    'sales_funnels' => [
+        'conversation_rules' => 'Conversa como un asesor humano, no como un formulario ni un guion. '
+            .'El objetivo de la etapa orienta la conversación, pero no es una secuencia de preguntas. '
+            .'Responde primero lo que el cliente pregunta o la objeción que plantea, y después retoma el objetivo cuando sea natural. '
+            .'Acepta interrupciones y cambios de tema sin perder el hilo. '
+            .'Usa lo que ya se habló: no repitas preguntas que el cliente ya respondió ni información que ya le diste. '
+            .'Haz como máximo una pregunta por mensaje. Sé breve: es un mensaje de WhatsApp.',
+    ],
+
 ];

@@ -4,7 +4,9 @@ namespace App\Platform\Conversation;
 
 use App\Factories\AIServiceFactory;
 use App\Models\Conversation;
+use App\Models\Payment;
 use App\Models\Product;
+use App\Models\SalesFunnel;
 use App\Models\SampleDelivery;
 use App\Models\Store;
 use App\Models\WhatsAppMessage;
@@ -13,12 +15,18 @@ use App\Platform\Commerce\AccessDecision;
 use App\Platform\Commerce\AccessGate;
 use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Commerce\CommercialAdvisor;
+use App\Platform\Commerce\CommercialClaims;
 use App\Platform\Commerce\FreeTurn;
 use App\Platform\Commerce\OpeningMessage;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Contracts\ProvidesRetrievalGuide;
 use App\Platform\Domains\DomainRegistry;
+use App\Platform\Funnel\FunnelDefinition;
+use App\Platform\Funnel\FunnelStep;
+use App\Platform\Funnel\SalesFunnelRunner;
+use App\Platform\Funnel\StageReply;
+use App\Platform\Knowledge\KnowledgeAccess;
 use App\Platform\Knowledge\KnowledgePlanner;
 use App\Platform\Knowledge\KnowledgeRetriever;
 use App\Platform\Memory\CustomerMemory;
@@ -82,6 +90,9 @@ class ConversationPipeline
         private readonly CommercialAdvisor $advisor,
         private readonly TopicClassifier $topics,
         private readonly OpeningMessage $openings,
+        private readonly SalesFunnelRunner $funnels,
+        private readonly KnowledgeAccess $knowledgeAccess,
+        private readonly CommercialClaims $claims,
     ) {}
 
     public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
@@ -167,6 +178,14 @@ class ConversationPipeline
         $domain = $product ? $this->domains->get($product->domain_key, $store->id) : null;
 
         $conversation->update(['current_product_id' => $product?->id, 'pending_state' => null]);
+
+        // A customer without access to a product with an active funnel goes
+        // through the funnel; without a funnel, nothing below changes.
+        if ($product && $domain && $product->activeFunnel() !== null && $this->funnels->appliesTo($product, $access = $this->access->decide($customer, $product))) {
+            $this->runFunnel($store, $conversation, $from, $messageBody, $clarifiedQuery ?? $messageBody, $customer, $product, $domain, $access, $wamid);
+
+            return;
+        }
 
         // Commercial access, from persisted state only. Without access and
         // without a sample to give, no facts are asked: the customer gets
@@ -262,6 +281,243 @@ class ConversationPipeline
         }
 
         $this->reply($store, $from, $messageBody, $answer, $domain?->key());
+    }
+
+    /**
+     * Executes what the funnel's Runner decides, with the same services as
+     * everything else: AccessGate already decided, SampleLedger reserves the
+     * free replies, CommerceResponder owns plans and payments. Who already
+     * was a customer, or has a payment open, gets the Core's answer.
+     *
+     * Every reply goes through deliverTurn(), which fails the job if
+     * WhatsApp did not take it: until then nothing is spent, recorded or
+     * moved, so the queue's retry finds everything as it was. Once sent,
+     * nothing fails the job, or the retry would send it again.
+     */
+    private function runFunnel(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, AccessDecision $access, ?string $wamid): void
+    {
+        if ($access->openPayment !== null || ! $this->funnels->isProspect($access)) {
+            $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+            $this->finishPurchase($store, $conversation, $product, $access, $wamid);
+
+            return;
+        }
+
+        $funnel = $product->activeFunnel();
+        $step = $this->funnels->begin($conversation, $product, $funnel, $access, $messageBody, $query);
+
+        Log::info('FUNNEL_STEP', ['store_id' => $store->id, 'product_id' => $product->id, 'version' => $funnel->version, 'kind' => $step->kind, 'stage' => $step->stage?->key, 'next' => $step->nextStage]);
+
+        if ($step->kind === FunnelStep::BLOCKED) {
+            $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+
+            return;
+        }
+
+        if ($step->kind === FunnelStep::ACTION && $step->action === FunnelDefinition::ACTION_START_PAYMENT) {
+            $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, false, $step->nextStage, $step->interactions);
+
+            return;
+        }
+
+        if ($step->kind === FunnelStep::ACTION) {
+            $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $step->action, false), $domain->key());
+            $this->afterFunnelOffer($step->action === FunnelDefinition::ACTION_SHOW_OFFER, $conversation, $product);
+            $this->funnels->advance($conversation, $product, $funnel, $step->nextStage, $step->interactions);
+
+            return;
+        }
+
+        $reservation = null;
+
+        try {
+            if ($step->kind === FunnelStep::LITERAL) {
+                // A literal goes out as configured, in place of the store's welcome.
+                $this->welcome = null;
+                $reservation = $step->useFreeReply && $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
+                $this->deliverTurn($store, $from, $messageBody, $this->fillPlaceholders($step->text, $product), $domain->key());
+                $this->afterFunnelOffer(str_contains($step->text, '{planes}'), $conversation, $product);
+                $this->funnels->advance($conversation, $product, $funnel, $step->nextStage, 0);
+
+                return;
+            }
+
+            $reservation = $step->useFreeReply ? $this->samples->reserve($customer, $product) : null;
+
+            if ($step->useFreeReply && $reservation === null) {
+                $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+
+                return;
+            }
+
+            $freeTurn = $reservation !== null ? new FreeTurn($reservation->turns_used, SampleLedger::limit($product)) : null;
+            $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
+            $knowledge = $this->knowledgeAccess->forStage($store, $domain, $product, $access, $step->stage, $query, $facts);
+
+            // A retry of the same message reuses the answer already generated.
+            $raw = $this->rememberedSample($store, $wamid);
+
+            if ($raw === null) {
+                $raw = AIServiceFactory::make($store)->getResponse(
+                    $messageBody,
+                    $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, $knowledge['reference'], $freeTurn, $query !== $messageBody ? $query : null),
+                    $this->history($store, $from, $domain->key()),
+                );
+                $this->rememberSample($store, $wamid, $raw);
+            }
+
+            $reply = StageReply::parse($raw, $step->stage->hasIntentRules(), $step->definition->intents);
+            $violation = $reply->reply !== null ? $this->claims->funnelViolation($reply->reply, $product->name) : 'empty';
+
+            Log::info('FUNNEL_REPLY', ['store_id' => $store->id, 'product_id' => $product->id, 'stage' => $step->stage->key, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'free_turn' => $freeTurn?->number, 'discarded' => $violation]);
+
+            // A reply that cannot go out spends nothing and moves nothing.
+            if ($violation !== null) {
+                $this->releaseFunnelReply($reservation);
+                $unavailable = filled($store->topic_unavailable_message);
+                $this->deliverTurn($store, $from, $messageBody, $unavailable ? trim($store->topic_unavailable_message) : $this->commerce->funnelOffer($product, $step->definition->offerCta), $domain->key());
+                $this->afterFunnelOffer(! $unavailable, $conversation, $product);
+                $this->forgetSample($store, $wamid);
+
+                return;
+            }
+
+            $outcome = $this->funnels->afterReply($step, $reply);
+
+            // A purchase answers with the Core's own text, and is no free reply.
+            if ($outcome->action === FunnelDefinition::ACTION_START_PAYMENT) {
+                $this->releaseFunnelReply($reservation);
+                $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
+                $this->forgetSample($store, $wamid);
+
+                return;
+            }
+
+            $parts = [$reply->reply, ...$knowledge['verbatim']];
+
+            if ($outcome->action === FunnelDefinition::ACTION_SHOW_OFFER) {
+                $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $outcome->action, true);
+            }
+
+            if ($outcome->text !== null) {
+                $parts[] = $this->fillPlaceholders($outcome->text, $product);
+            }
+
+            $this->deliverTurn($store, $from, $messageBody, implode("\n\n", $parts), $domain->key());
+            $this->afterFunnelOffer($outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || str_contains((string) $outcome->text, '{planes}'), $conversation, $product);
+            $this->forgetSample($store, $wamid);
+            $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
+        } catch (Throwable $e) {
+            // Nothing was delivered: the free reply stays available and the state does not move.
+            $this->releaseFunnelReply($reservation);
+
+            throw $e;
+        }
+    }
+
+    /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
+    private function releaseFunnelReply(?SampleDelivery &$reservation): void
+    {
+        if ($reservation !== null) {
+            $this->samples->release($reservation);
+            $reservation = null;
+        }
+    }
+
+    /** Only what the customer actually got counts as an offer shown. */
+    private function afterFunnelOffer(bool $shown, Conversation $conversation, Product $product): void
+    {
+        if ($shown) {
+            $this->commerce->recordOfferShown($conversation, $product);
+        }
+    }
+
+    /**
+     * A purchase: the payment exists before its message goes out. If the send
+     * fails, the retry finds that payment open, never starts another, and
+     * finishPurchase() takes the funnel where this turn was going.
+     */
+    private function deliverPurchase(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelDefinition $definition, bool $readByModel, string $nextStage, int $interactions): void
+    {
+        $text = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $definition, FunnelDefinition::ACTION_START_PAYMENT, $readByModel);
+        $payment = $this->access->decide($customer, $product)->openPayment;
+
+        if ($payment !== null) {
+            Cache::put($this->purchaseDestinationKey($payment), ['funnel_id' => $funnel->id, 'stage' => $nextStage, 'interactions' => $interactions], now()->addHours(CommerceResponder::PAYMENT_WINDOW_HOURS));
+        }
+
+        $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
+        $this->funnels->advance($conversation, $product, $funnel, $nextStage, $interactions);
+
+        if ($payment !== null) {
+            Cache::forget($this->purchaseDestinationKey($payment));
+        }
+    }
+
+    /**
+     * The open payment's message went out: if the purchase that started it
+     * failed to send, the funnel now moves where it was going. A funnel
+     * published in between is not moved to a stage of the previous version.
+     */
+    private function finishPurchase(Store $store, Conversation $conversation, Product $product, AccessDecision $access, ?string $wamid): void
+    {
+        $destination = $access->openPayment !== null ? Cache::get($this->purchaseDestinationKey($access->openPayment)) : null;
+
+        if ($destination === null) {
+            return;
+        }
+
+        $funnel = $product->activeFunnel();
+
+        if ($funnel?->id === $destination['funnel_id']) {
+            $this->funnels->advance($conversation, $product, $funnel, $destination['stage'], $destination['interactions']);
+        }
+
+        Cache::forget($this->purchaseDestinationKey($access->openPayment));
+        $this->forgetSample($store, $wamid);
+    }
+
+    private function purchaseDestinationKey(Payment $payment): string
+    {
+        return "funnel-purchase-destination:{$payment->id}";
+    }
+
+    /**
+     * The funnel's operations, always through CommerceResponder. A purchase
+     * read by the model never assumes a plan the customer did not name.
+     */
+    private function funnelAction(Store $store, Conversation $conversation, string $messageBody, $customer, Product $product, FunnelDefinition $definition, string $action, bool $readByModel): string
+    {
+        return $action === FunnelDefinition::ACTION_START_PAYMENT
+            ? $this->commerce->startPurchase($store, $conversation, $customer, $product, $messageBody, $readByModel)->text
+            : $this->commerce->funnelOffer($product, $definition->offerCta);
+    }
+
+    /** A configured text with the data only the Core has: the plans always come from the catalog. */
+    private function fillPlaceholders(string $text, Product $product): string
+    {
+        return strtr($text, ['{producto}' => $product->name, '{planes}' => str_contains($text, '{planes}') ? $this->commerce->plansBlock($product) : '']);
+    }
+
+    /**
+     * Sent first, recorded once WhatsApp took it, like a sample: a turn that
+     * did not go out fails the job, so the queue retries it. Once sent,
+     * nothing fails the job.
+     */
+    private function deliverTurn(Store $store, string $from, string $messageBody, string $text, ?string $domainKey): void
+    {
+        $text = $this->withWelcome($text);
+        $sentWamid = WhatsAppService::sendMessage($from, $text, $store);
+
+        if ($sentWamid === null) {
+            throw new RuntimeException("The funnel's reply for store [{$store->id}] could not be sent.");
+        }
+
+        try {
+            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $text, $sentWamid);
+        } catch (Throwable $e) {
+            Log::error('TURN_HISTORY_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
+        }
     }
 
     /**
@@ -474,9 +730,19 @@ class ConversationPipeline
     /**
      * Without access: the deterministic commercial answer (subscription
      * state, plans), preceded by the product's configured commercial
-     * resources when CommercialAdvisor finds some that fit the message.
+     * resources when CommercialAdvisor finds some that fit the message. The
+     * offer counts as shown only once WhatsApp took it; if it did not, the
+     * job fails and the retry shows it whole.
      */
     private function replyBlocked(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, ?DomainModule $domain, AccessDecision $access): void
+    {
+        $text = $this->blockedText($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+
+        $this->deliverTurn($store, $from, $messageBody, $text, $product->domain_key);
+        $this->commerce->recordOfferIfSent($conversation, $product, $text);
+    }
+
+    private function blockedText(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, ?DomainModule $domain, AccessDecision $access): string
     {
         $commercial = $domain
             ? $this->advisor->respond($store, $domain, $product, $access, $messageBody, $this->memory->visibleFacts($customer, $domain))
@@ -495,7 +761,7 @@ class ConversationPipeline
             ? $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation)
             : $this->commerce->blockedReply($store, $product, $access, $conversation);
 
-        $this->reply($store, $from, $messageBody, $commercial !== null ? $commercial."\n\n".$offer : $offer, $product->domain_key);
+        return $commercial !== null ? $commercial."\n\n".$offer : $offer;
     }
 
     /**

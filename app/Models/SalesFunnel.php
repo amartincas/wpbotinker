@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Platform\Funnel\FunnelDefinition;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -18,6 +19,8 @@ use InvalidArgumentException;
 #[Fillable(['store_id', 'product_id', 'version', 'definition', 'product_snapshot', 'restored_from_id', 'created_by', 'published_at'])]
 class SalesFunnel extends Model
 {
+    private ?FunnelDefinition $parsedDefinition = null;
+
     protected function casts(): array
     {
         return [
@@ -45,7 +48,7 @@ class SalesFunnel extends Model
                 throw new InvalidArgumentException("Version [{$funnel->restored_from_id}] does not belong to product [{$product->id}].");
             }
 
-            self::assertStages($funnel->definition);
+            FunnelDefinition::fromArray($funnel->definition);
 
             $funnel->store_id = $product->store_id;
             $funnel->published_at ??= now();
@@ -60,29 +63,10 @@ class SalesFunnel extends Model
         });
     }
 
-    /**
-     * The shape persistence depends on: at least one stage, each with its own
-     * key. What the stages mean is not checked here.
-     */
-    private static function assertStages(mixed $definition): void
+    /** The validated configuration of this version. */
+    public function funnelDefinition(): FunnelDefinition
     {
-        $stages = is_array($definition) ? ($definition['stages'] ?? null) : null;
-
-        if (! is_array($stages) || ! array_is_list($stages) || $stages === []) {
-            throw new InvalidArgumentException('A sales funnel definition needs a list of stages.');
-        }
-
-        $keys = array_map(fn ($stage) => is_array($stage) ? ($stage['key'] ?? null) : null, $stages);
-
-        foreach ($keys as $key) {
-            if (! is_string($key) || trim($key) === '' || mb_strlen($key) > 100) {
-                throw new InvalidArgumentException('Every stage of a sales funnel needs a key of up to 100 characters.');
-            }
-        }
-
-        if (count(array_unique($keys)) !== count($keys)) {
-            throw new InvalidArgumentException('The stages of a sales funnel need different keys.');
-        }
+        return $this->parsedDefinition ??= FunnelDefinition::fromArray($this->definition);
     }
 
     public function hasStage(string $key): bool

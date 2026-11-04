@@ -232,6 +232,57 @@ class CommerceResponder
         return ($closing !== '' ? $closing."\n\n" : '').$this->offerText($product);
     }
 
+    /**
+     * The offer a funnel shows: the product's closing, the plans from the
+     * catalog and the funnel's call to action. Whoever sends it records it,
+     * once it went out (recordOfferShown()).
+     */
+    public function funnelOffer(Product $product, ?string $cta): string
+    {
+        $closing = trim((string) $product->sample_closing_message);
+
+        return ($closing !== '' ? $closing."\n\n" : '').$this->offerText($product, $cta);
+    }
+
+    /** The active plans, for a text that presents them; empty without plans. */
+    public function plansBlock(Product $product): string
+    {
+        return $this->planLines($this->plans($product));
+    }
+
+    /**
+     * The message only chooses a plan by its stored name ("el semanal"),
+     * with nothing else asked: no negation, question or doubt about it.
+     */
+    public function choosesPlan(string $message, Product $product): bool
+    {
+        $text = $this->normalize($message);
+        $named = $this->namedPlans($text, $this->plans($product));
+
+        if ($named->isEmpty() || preg_match(self::NEGATION, $text) === 1 || preg_match(self::CONSULTATION, $text) === 1 || preg_match(self::DOUBT, $text) === 1) {
+            return false;
+        }
+
+        $words = array_diff(preg_split('/[^a-z0-9]+/', $text, -1, PREG_SPLIT_NO_EMPTY), self::FILLER);
+
+        return array_diff($words, self::CHOOSING_WORDS, $this->planWords($named)) === [];
+    }
+
+    /**
+     * A purchase a funnel decided on, through the same validations as any
+     * other: open payments, available plans, payment instructions, the plan
+     * named. With $confirmPlan, a plan the customer did not name is never
+     * assumed, not even the only one: they choose it from the list.
+     */
+    public function startPurchase(Store $store, Conversation $conversation, Customer $customer, Product $product, string $message, bool $confirmPlan): CommerceReply
+    {
+        $conversation->update(['current_product_id' => $product->id]);
+
+        Log::info('COMMERCE_REQUEST', ['store_id' => $store->id, 'customer_id' => $customer->id, 'product_id' => $product->id, 'intent' => 'funnel_purchase']);
+
+        return $this->pay($store, $conversation, $customer, $product, $this->normalize($message), $confirmPlan);
+    }
+
     /** The plan list of the product was just shown in this conversation. */
     public function recordOfferShown(Conversation $conversation, Product $product): void
     {
@@ -241,11 +292,20 @@ class CommerceResponder
         $conversation->update(['offers_shown' => $shown]);
     }
 
+    /** What WhatsApp took may be a reminder or a payment instead: only the plan list itself counts. */
+    public function recordOfferIfSent(Conversation $conversation, Product $product, string $sentText): void
+    {
+        if ($this->plans($product)->isNotEmpty() && str_contains($sentText, $this->offerText($product))) {
+            $this->recordOfferShown($conversation, $product);
+        }
+    }
+
     /**
      * The plan list when the customer did not ask for it: shown at most
      * once every botinker.free_interactions.offer_interval_hours per
      * conversation and product, otherwise a single line saying how to see
-     * it. Asking for prices, plans or to pay always shows it.
+     * it. Asking for prices, plans or to pay always shows it. Whoever sends
+     * it records it, once it went out (recordOfferIfSent()).
      */
     private function unaskedOffer(Product $product, ?Conversation $conversation): string
     {
@@ -259,8 +319,6 @@ class CommerceResponder
         if ($last !== null && $hours > 0 && Carbon::parse($last)->gt(now()->subHours($hours))) {
             return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
         }
-
-        $this->recordOfferShown($conversation, $product);
 
         return $this->offerText($product);
     }
@@ -280,7 +338,7 @@ class CommerceResponder
      * when it names none. A plan named that cannot be told for certain
      * (several fit, or none) is never guessed: the customer chooses.
      */
-    private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product, string $text): CommerceReply
+    private function pay(Store $store, Conversation $conversation, Customer $customer, Product $product, string $text, bool $confirmPlan = false): CommerceReply
     {
         $open = $this->openPayment($customer, $product);
 
@@ -300,7 +358,7 @@ class CommerceResponder
             return $this->startPayment($store, $conversation, $customer, $product, $named->first());
         }
 
-        if ($plans->count() === 1 && $named->isEmpty() && ! $this->mentionsPlan($text)) {
+        if ($plans->count() === 1 && $named->isEmpty() && ! $confirmPlan && ! $this->mentionsPlan($text)) {
             return $this->startPayment($store, $conversation, $customer, $product, $plans->first());
         }
 
@@ -372,7 +430,7 @@ class CommerceResponder
         };
     }
 
-    private function offerText(Product $product): string
+    private function offerText(Product $product, ?string $cta = null): string
     {
         $plans = $this->plans($product);
 
@@ -380,7 +438,7 @@ class CommerceResponder
             return "Por ahora «{$product->name}» no tiene planes disponibles. Escríbenos más tarde.";
         }
 
-        return "Planes de «{$product->name}»:\n".$this->planLines($plans)."\n\nEscribe «pagar» para suscribirte.";
+        return "Planes de «{$product->name}»:\n".$this->planLines($plans)."\n\n".($cta ?? 'Escribe «pagar» para suscribirte.');
     }
 
     /**

@@ -38,9 +38,23 @@ class OpeningMessage
         return null;
     }
 
-    /** Lowercase, no accents, punctuation or emoji, single spaces: «¡Quiero conocer…!» = «quiero conocer». */
+    /**
+     * Lowercase, no accents, punctuation or emoji, single spaces, and without
+     * the greetings and courtesies around it: «¡Hola! Quiero conocer…, por
+     * favor» = «quiero conocer…». A text made only of them stays as it is.
+     */
     public static function normalize(string $text): string
     {
-        return trim(preg_replace('/[^a-z0-9]+/', ' ', Str::ascii(mb_strtolower($text))));
+        $text = trim(preg_replace('/[^a-z0-9]+/', ' ', Str::ascii(mb_strtolower($text))));
+        $greeting = '(?:hola|buenas tardes|buenas noches|buenos dias|buen dia|buenas|saludos)';
+        $courtesy = '(?:por favor|muchas gracias|gracias)';
+
+        if (preg_match("/^(?:(?:{$greeting}|{$courtesy})(?:\s+|$))+$/", $text) === 1) {
+            return $text;
+        }
+
+        $text = preg_replace("/^(?:{$greeting}\s+)+/", '', $text);
+
+        return preg_replace("/(?:\s+{$courtesy})+$/", '', $text);
     }
 }

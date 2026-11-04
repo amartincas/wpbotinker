@@ -153,7 +153,7 @@ class CommercialAdvisor
      * @param  array<string, mixed>  $facts
      * @return array<string, mixed>
      */
-    private function shareableFacts(DomainModule $domain, array $facts): array
+    public function shareableFacts(DomainModule $domain, array $facts): array
     {
         $definitions = collect($domain->facts())->keyBy('key');
 
