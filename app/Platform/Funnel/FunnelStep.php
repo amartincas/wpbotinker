@@ -17,6 +17,13 @@ final class FunnelStep
     /** Let the model converse towards the stage's goal. */
     public const CONVERSE = 'converse';
 
+    /**
+     * A guided funnel without free replies left: the model only reads the
+     * message, so a customer can still ask for the plans or buy in their own
+     * words. Its text never goes out.
+     */
+    public const READ = 'read';
+
     /** Nothing left in the funnel for this customer: the Core's commercial reply. */
     public const BLOCKED = 'blocked';
 
@@ -45,6 +52,11 @@ final class FunnelStep
     public static function converse(FunnelDefinition $definition, FunnelStage $stage, int $interactions, bool $useFreeReply): self
     {
         return new self(self::CONVERSE, $definition, stage: $stage, nextStage: $stage->key, interactions: $interactions, useFreeReply: $useFreeReply);
+    }
+
+    public static function read(FunnelDefinition $definition, FunnelStage $stage, int $interactions): self
+    {
+        return new self(self::READ, $definition, stage: $stage, nextStage: $stage->key, interactions: $interactions);
     }
 
     public static function blocked(FunnelDefinition $definition): self

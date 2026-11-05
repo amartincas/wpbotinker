@@ -250,6 +250,14 @@ class CommerceResponder
         return $this->planLines($this->plans($product));
     }
 
+    /** The active plans without their amounts, which only the Core states: for the model of a guided funnel. */
+    public function planSummary(Product $product): string
+    {
+        return $this->plans($product)
+            ->map(fn (Plan $plan) => "- {$plan->name}: {$plan->duration_days} días")
+            ->implode("\n");
+    }
+
     /**
      * The message only chooses a plan by its stored name ("el semanal"),
      * with nothing else asked: no negation, question or doubt about it.

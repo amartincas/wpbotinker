@@ -74,6 +74,7 @@ final class FunnelDefinition
         public readonly ?string $onFreeRepliesExhausted,
         public readonly ?string $offerCta,
         public readonly bool $openingConsumesFreeReply,
+        public readonly bool $guided = false,
     ) {}
 
     public function stage(string $key): ?FunnelStage
@@ -141,11 +142,36 @@ final class FunnelDefinition
             throw new InvalidArgumentException('offer_cta must be a text.');
         }
 
+        $guided = GuidedFunnel::isGuided($definition);
+
+        if ($guided) {
+            self::assertGuided($stages);
+        }
+
         return new self(
             $name, $goal, $start, $stages, $intents, $limit, $onExhausted,
             $cta !== null ? trim($cta) : null,
             (bool) ($definition['opening_consumes_free_reply'] ?? true),
+            $guided,
         );
+    }
+
+    /**
+     * Its one stage has to spend free replies: that is what limits the model.
+     *
+     * @param  array<string, FunnelStage>  $stages
+     */
+    private static function assertGuided(array $stages): void
+    {
+        $stage = array_values($stages)[0];
+
+        if (count($stages) !== 1 || $stage->isMessage() || ! $stage->usesFreeReplies) {
+            throw new InvalidArgumentException('A guided funnel needs one AI stage that uses free replies.');
+        }
+
+        if (mb_strlen($stage->instructions) > GuidedFunnel::MAX_INSTRUCTIONS_LENGTH) {
+            throw new InvalidArgumentException('The instructions of a guided funnel are too long.');
+        }
     }
 
     /**

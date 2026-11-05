@@ -11,6 +11,7 @@ use App\Models\KnowledgeSource;
 use App\Models\Plan;
 use App\Models\Product;
 use App\Models\SalesFunnel;
+use App\Platform\Funnel\GuidedFunnel;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 
@@ -46,6 +47,19 @@ class FunnelSummaryInfolist
 
         $definition = $active->definition;
         $free = $definition['free_replies'] ?? [];
+
+        if (GuidedFunnel::isGuided($definition)) {
+            return $section->schema([
+                TextEntry::make('active_version')->label('Versión')->state("v{$active->version}")
+                    ->url(ProductResource::getUrl('funnel-version', ['record' => $product, 'version' => $active->version])),
+                TextEntry::make('active_published_at')->label('Publicada')->state($active->published_at)->dateTime(),
+                TextEntry::make('active_creator')->label('Publicada por')->state($active->creator?->name)->placeholder('—'),
+                TextEntry::make('active_free_limit')->label('Respuestas gratuitas')->state((string) ($free['limit'] ?? 0)),
+                TextEntry::make('active_conversations')->label('Conversaciones')->state((string) ConversationFunnelState::where('product_id', $product->id)->count()),
+                TextEntry::make('active_instructions')->label('Instrucciones para la IA')->state(GuidedFunnel::instructions($definition))
+                    ->extraAttributes(['style' => 'white-space: pre-wrap'])->columnSpanFull(),
+            ]);
+        }
 
         return $section->schema([
             TextEntry::make('active_version')->label('Versión')->state("v{$active->version}")
@@ -91,7 +105,8 @@ class FunnelSummaryInfolist
         $plans = Plan::where('product_id', $product->id)->where('is_active', true)->count();
 
         return Section::make('Configuración del producto que usa el embudo')
-            ->description('Se lee del producto al ejecutar: cambiarla no crea una versión. Con un embudo activo no se usan «Instrucciones de las respuestas gratuitas» ni «Datos que necesita».')
+            ->description('Se lee del producto al ejecutar: cambiarla no crea una versión. Con un embudo activo no se usan «Instrucciones de las respuestas gratuitas» ni «Datos que necesita».'
+                .(GuidedFunnel::isGuided($product->activeFunnel()->definition ?? []) ? ' Tampoco se usan sus «Instrucciones comerciales» para redactar: prevalece la instrucción del embudo.' : ''))
             ->columns(2)
             ->schema([
                 TextEntry::make('opening_message')->label('Mensaje inicial')->state($product->opening_message)->placeholder('Sin configurar')

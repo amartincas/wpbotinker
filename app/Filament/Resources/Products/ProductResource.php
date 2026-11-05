@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Products;
 
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
+use App\Filament\Resources\Products\Pages\EditGuidedFunnel;
 use App\Filament\Resources\Products\Pages\EditProductFunnel;
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Filament\Resources\Products\Pages\ManageProductFunnel;
@@ -72,6 +73,7 @@ class ProductResource extends Resource
             'funnel' => ManageProductFunnel::route('/{record}/funnel'),
             // Before the version's route, which would take "edit" as a version.
             'funnel-edit' => EditProductFunnel::route('/{record}/funnel/edit'),
+            'funnel-guided' => EditGuidedFunnel::route('/{record}/funnel/instruction'),
             'funnel-version' => ViewFunnelVersion::route('/{record}/funnel/{version}'),
         ];
     }

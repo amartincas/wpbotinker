@@ -56,6 +56,17 @@ class PromptAssembler
         ."\n- No menciones precios, planes, descuentos, medios ni condiciones de pago: el sistema los agrega cuando corresponde."
         ."\n- No afirmes que el cliente tiene acceso ni que su pago o su suscripción quedaron listos.";
 
+    /**
+     * The same limits for a guided funnel, whose instruction is the only
+     * commercial one: it may talk about the plans, never about their amounts.
+     */
+    private const GUIDED_FUNNEL_RULES = "### LÍMITES DEL PROCESO COMERCIAL\n"
+        .'El cliente aún no tiene acceso al servicio.'
+        ."\n- Lo indicado en PROCESO COMERCIAL prevalece sobre cualquier otra indicación comercial de la tienda, del dominio o del producto, pero no sobre estos límites ni sobre las reglas del sistema."
+        ."\n- Tus afirmaciones sobre el producto deben estar en la información de arriba o en el material autorizado; si no están, dilo y no las inventes."
+        ."\n- Puedes nombrar los planes y comparar su duración, pero no menciones precios, importes, descuentos, medios ni condiciones de pago: el sistema los agrega cuando corresponde."
+        ."\n- No afirmes que el cliente tiene acceso ni que su pago o su suscripción quedaron listos.";
+
     public function __construct(private readonly PersonFacts $personFacts) {}
 
     /**
@@ -190,12 +201,15 @@ class PromptAssembler
      * the stage's objectives and instructions, and the material KnowledgeAccess
      * authorized. Never the service's instructions (ai_sales_strategy), which
      * belong to subscribers. With intents, the answer also carries the reading
-     * of the message, in one single call.
+     * of the message, in one single call. In a guided funnel the instruction is
+     * the only commercial one, the model knows the plans without their amounts,
+     * and the intent is its proposal of what comes next.
      *
      * @param  array<string, mixed>  $facts
      * @param  Collection<int, KnowledgeChunk>  $resources
+     * @param  bool  $freeRepliesOver  the model only reads the message: its text never goes out
      */
-    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery): string
+    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $freeRepliesOver = false): string
     {
         $prompt = trim($this->neutralize($store->system_prompt ?? '')) ?: 'You are an assistant.';
 
@@ -208,11 +222,15 @@ class PromptAssembler
         foreach ([
             'Descripción' => $stage->uses(FunnelDefinition::CONTEXT_DESCRIPTION) ? $product->description : null,
             'Información operativa' => $stage->uses(FunnelDefinition::CONTEXT_FAQ) ? $product->faq_context : null,
-            'Instrucciones comerciales' => $product->commercial_instructions,
+            'Instrucciones comerciales' => $definition->guided ? null : $product->commercial_instructions,
         ] as $label => $value) {
             if (filled($value)) {
                 $prompt .= "\n{$label}: ".trim($this->neutralize((string) $value));
             }
+        }
+
+        if (filled($plans)) {
+            $prompt .= "\n\n### PLANES DISPONIBLES\n".$this->neutralize($plans);
         }
 
         $prompt .= "\n\n### PROCESO COMERCIAL\nObjetivo general: ".$this->singleLine($this->neutralize($definition->goal))
@@ -253,17 +271,23 @@ class PromptAssembler
             }
         }
 
-        $prompt .= "\n\n".self::FUNNEL_RULES."\n\n".self::CORE_RULES;
+        $prompt .= "\n\n".($definition->guided ? self::GUIDED_FUNNEL_RULES : self::FUNNEL_RULES)."\n\n".self::CORE_RULES;
 
         if ($stage->hasIntentRules()) {
             $prompt .= "\n\n### FORMATO DE RESPUESTA\n"
-                .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}. '
-                .'En "intent" indica cuál de estas intenciones expresa el último mensaje del cliente; usa null si no expresa ninguna con claridad. '
-                .'Es solo una lectura del mensaje: no ejecuta nada ni cambia lo que le dices al cliente.';
+                .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}. ';
+            $prompt .= $definition->guided
+                ? 'En "intent" propón qué debe hacer el sistema en este momento de la conversación; usa null para seguir conversando. El sistema valida tu propuesta y ejecuta la operación: tú no ejecutas nada.'
+                : 'En "intent" indica cuál de estas intenciones expresa el último mensaje del cliente; usa null si no expresa ninguna con claridad. '
+                    .'Es solo una lectura del mensaje: no ejecuta nada ni cambia lo que le dices al cliente.';
 
             foreach ($definition->intents as $key => $description) {
                 $prompt .= "\n- {$key}: ".$this->singleLine($this->neutralize($description));
             }
+        }
+
+        if ($freeRepliesOver) {
+            $prompt .= "\n\n".trim((string) config('botinker.sales_funnels.guided.after_limit'));
         }
 
         return $prompt;

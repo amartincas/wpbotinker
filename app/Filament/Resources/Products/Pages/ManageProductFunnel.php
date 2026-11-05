@@ -49,7 +49,7 @@ class ManageProductFunnel extends ManageRelatedRecords
             Action::make('editFunnel')
                 ->label('Editar embudo')
                 ->icon('heroicon-o-pencil')
-                ->url(ProductResource::getUrl('funnel-edit', ['record' => $this->product()])),
+                ->url(ProductResource::getUrl('funnel-guided', ['record' => $this->product()])),
             $this->deactivateAction(),
         ];
     }

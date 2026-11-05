@@ -6,6 +6,7 @@ use App\Models\Product;
 use App\Models\SalesFunnel;
 use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStage;
+use App\Platform\Funnel\GuidedFunnel;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 
@@ -30,6 +31,17 @@ class FunnelVersionInfolist
     public static function components(Product $product, SalesFunnel $version): array
     {
         $definition = $version->definition;
+
+        if (GuidedFunnel::isGuided($definition)) {
+            return [
+                self::publication($product, $version),
+                Section::make('Configuración')->columns(2)->schema([
+                    self::longText('definition_instructions', 'Instrucciones para la IA', GuidedFunnel::instructions($definition)),
+                    TextEntry::make('definition_free_limit')->label('Respuestas gratuitas')->state((string) ($definition['free_replies']['limit'] ?? 0)),
+                ]),
+                self::snapshot($version->product_snapshot ?? []),
+            ];
+        }
 
         return [
             self::publication($product, $version),

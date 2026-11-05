@@ -91,6 +91,10 @@ class SalesFunnelRunner
             }
 
             if ($current->usesFreeReplies && $exhausted) {
+                if ($definition->guided) {
+                    return FunnelStep::read($definition, $current, $interactions);
+                }
+
                 $target = $definition->onFreeRepliesExhausted !== null ? $definition->stage($definition->onFreeRepliesExhausted) : null;
 
                 if ($target === null || isset($visited[$target->key])) {

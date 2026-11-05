@@ -5,8 +5,11 @@ namespace App\Filament\Resources\Products\Schemas;
 use App\Models\KnowledgeSource;
 use App\Models\Plan;
 use App\Models\Product;
+use App\Models\Topic;
+use App\Platform\Commerce\CommercialClaims;
 use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStage;
+use App\Platform\Funnel\GuidedFunnel;
 
 /**
  * What FunnelDefinition accepts but is worth a second look: warnings, never a
@@ -21,6 +24,15 @@ class FunnelPublicationChecks
     public static function warnings(Product $product, array $definition): array
     {
         $stages = array_column($definition['stages'] ?? [], null, 'key');
+
+        if (GuidedFunnel::isGuided($definition)) {
+            return [
+                ...self::openProduct($product),
+                ...self::paymentWithoutMeans($product, $stages),
+                ...self::statedAmounts($product, $definition),
+            ];
+        }
+
         $edges = self::edges($definition, $stages);
 
         return [
@@ -32,6 +44,29 @@ class FunnelPublicationChecks
             ...self::paymentWithoutMeans($product, $stages),
             ...self::sampleWithoutSources($product, $stages),
         ];
+    }
+
+    /**
+     * A model told about a price may repeat it, and the Core discards any reply
+     * that states one. Conservative: a figure that is no price is also reported.
+     *
+     * @param  array<string, mixed>  $definition
+     * @return list<string>
+     */
+    private static function statedAmounts(Product $product, array $definition): array
+    {
+        $claims = app(CommercialClaims::class);
+
+        $texts = [
+            'Las instrucciones para la IA' => GuidedFunnel::instructions($definition),
+            'La descripción del producto' => $product->description,
+            'Las preguntas frecuentes del producto' => $product->faq_context,
+            'Las instrucciones del tema' => Topic::where('store_id', $product->store_id)->where('key', $product->domain_key)->value('instructions'),
+        ];
+
+        $sources = array_keys(array_filter($texts, fn (?string $text) => $text !== null && $claims->amount($text) !== null));
+
+        return array_map(fn (string $source) => "{$source} parecen incluir un precio o importe. La IA no puede decirlos: las respuestas que los mencionen se descartan. Déjalos solo en los planes.", $sources);
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Filament\Resources\Products\Schemas\FunnelRestorePreview;
 use App\Models\Product;
 use App\Models\SalesFunnel;
 use App\Platform\Funnel\FunnelDefinition;
+use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelVersions;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -61,7 +62,8 @@ class FunnelVersionsTable
                 Action::make('editFromVersion')
                     ->label('Editar a partir de esta')
                     ->icon('heroicon-o-pencil')
-                    ->url(fn (SalesFunnel $record) => ProductResource::getUrl('funnel-edit', ['record' => $product, 'from' => $record->version])),
+                    // A version made of stages can only be edited as such.
+                    ->url(fn (SalesFunnel $record) => ProductResource::getUrl(GuidedFunnel::isGuided($record->definition) ? 'funnel-guided' : 'funnel-edit', ['record' => $product, 'from' => $record->version])),
                 Action::make('restore')
                     ->label('Restaurar')
                     ->icon('heroicon-o-arrow-path')

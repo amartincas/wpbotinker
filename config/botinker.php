@@ -98,6 +98,25 @@ return [
             .'Acepta interrupciones y cambios de tema sin perder el hilo. '
             .'Usa lo que ya se habló: no repitas preguntas que el cliente ya respondió ni información que ya le diste. '
             .'Haz como máximo una pregunta por mensaje. Sé breve: es un mensaje de WhatsApp.',
+
+        /*
+        | What surrounds an administrator's single instruction in a guided
+        | funnel (App\Platform\Funnel\GuidedFunnel). Generic, for every domain:
+        | the way of selling is that instruction, never these texts. Each
+        | published version keeps the texts it was published with.
+        */
+        'guided' => [
+            'name' => 'Instrucción comercial',
+            'goal' => 'Convertir al prospecto en suscriptor del producto mediante una conversación natural.',
+            'stage_goal' => 'Entender qué necesita la persona, resolver sus preguntas y objeciones, y orientarla hacia la suscripción cuando sea el momento.',
+            'intents' => [
+                'comprar' => 'El cliente decidió comprar o activar el servicio, o pide empezar ya, con las palabras que sea. No incluye preguntas sobre el precio ni sobre cómo funciona.',
+                'presentar_oferta' => 'Este es el momento de mostrarle los planes: el cliente los pide, o ya entendió cómo le ayuda el servicio y conviene presentárselos. '
+                    .'El sistema los agrega después de tu respuesta, con sus precios. Si ya los vio en esta conversación y no los vuelve a pedir, no la elijas.',
+            ],
+            'after_limit' => 'Las respuestas gratuitas de este cliente se agotaron: tu texto no se le enviará, así que deja "reply" vacío. '
+                .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null.',
+        ],
     ],
 
 ];

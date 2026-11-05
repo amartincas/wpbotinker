@@ -314,6 +314,12 @@ class ConversationPipeline
             return;
         }
 
+        if ($step->kind === FunnelStep::READ) {
+            $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access);
+
+            return;
+        }
+
         if ($step->kind === FunnelStep::ACTION && $step->action === FunnelDefinition::ACTION_START_PAYMENT) {
             $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, false, $step->nextStage, $step->interactions);
 
@@ -345,7 +351,11 @@ class ConversationPipeline
             $reservation = $step->useFreeReply ? $this->samples->reserve($customer, $product) : null;
 
             if ($step->useFreeReply && $reservation === null) {
-                $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+                if ($step->definition->guided) {
+                    $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access);
+                } else {
+                    $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
+                }
 
                 return;
             }
@@ -360,7 +370,7 @@ class ConversationPipeline
             if ($raw === null) {
                 $raw = AIServiceFactory::make($store)->getResponse(
                     $messageBody,
-                    $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, $knowledge['reference'], $freeTurn, $query !== $messageBody ? $query : null),
+                    $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, $knowledge['reference'], $freeTurn, $query !== $messageBody ? $query : null, $step->definition->guided ? $this->commerce->planSummary($product) : null),
                     $this->history($store, $from, $domain->key()),
                 );
                 $this->rememberSample($store, $wamid, $raw);
@@ -416,6 +426,51 @@ class ConversationPipeline
     }
 
     /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
+    /**
+     * A guided funnel without free replies left. The model only reads what the
+     * customer wants, without material and at most once per message: its text
+     * never goes out, so this gives no service. Whatever it does not propose,
+     * or if it fails, the customer gets the Core's own deterministic reply.
+     */
+    private function readAfterFreeReplies(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access): void
+    {
+        $outcome = null;
+
+        try {
+            $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
+            $raw = AIServiceFactory::make($store)->getResponse(
+                $messageBody,
+                $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), freeRepliesOver: true),
+                $this->history($store, $from, $domain->key()),
+            );
+            $reply = StageReply::parse($raw, true, $step->definition->intents);
+            $outcome = $this->funnels->afterReply($step, $reply);
+
+            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action]);
+        } catch (Throwable $e) {
+            Log::warning('FUNNEL_LIMIT_READ_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
+
+        if ($outcome?->action === FunnelDefinition::ACTION_START_PAYMENT) {
+            $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
+
+            return;
+        }
+
+        if ($outcome?->action === FunnelDefinition::ACTION_SHOW_OFFER) {
+            $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $outcome->action, true), $domain->key());
+            $this->afterFunnelOffer(true, $conversation, $product);
+            $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
+
+            return;
+        }
+
+        $text = $this->commerce->blockedReply($store, $product, $access, $conversation);
+
+        $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
+        $this->commerce->recordOfferIfSent($conversation, $product, $text);
+    }
+
     private function releaseFunnelReply(?SampleDelivery &$reservation): void
     {
         if ($reservation !== null) {

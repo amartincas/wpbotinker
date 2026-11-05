@@ -239,7 +239,7 @@ class EditProductFunnel extends Page
      * @param  array<string, mixed>  $definition
      * @return list<string>
      */
-    private function warningsFor(array $definition): array
+    protected function warningsFor(array $definition): array
     {
         return [
             ...FunnelPublicationChecks::warnings($this->product(), $definition),
@@ -322,12 +322,17 @@ class EditProductFunnel extends Page
                     : null,
                 Action::make('reload')
                     ->label('Recargar el editor')
-                    ->url(ProductResource::getUrl('funnel-edit', ['record' => $product])),
+                    ->url($this->editorUrl()),
             ])))
             ->send();
     }
 
-    private function baseVersion(): ?SalesFunnel
+    protected function editorUrl(): string
+    {
+        return ProductResource::getUrl('funnel-edit', ['record' => $this->product()]);
+    }
+
+    protected function baseVersion(): ?SalesFunnel
     {
         if ($this->from !== null) {
             return $this->product()->salesFunnels()->where('version', (int) $this->from)->firstOrFail();
@@ -346,7 +351,7 @@ class EditProductFunnel extends Page
             : [];
     }
 
-    private function product(): Product
+    protected function product(): Product
     {
         /** @var Product */
         return $this->getRecord();

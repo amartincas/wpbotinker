@@ -6,6 +6,7 @@ use App\Models\ConversationFunnelState;
 use App\Models\Product;
 use App\Models\SalesFunnel;
 use App\Platform\Commerce\SampleLedger;
+use App\Platform\Funnel\GuidedFunnel;
 use Filament\Infolists\Components\TextEntry;
 
 /**
@@ -33,13 +34,16 @@ class FunnelPublicationPreview
                 ->state("Se publicará la versión v{$next} y se activará de inmediato para todos los prospectos de este producto. Las versiones anteriores no cambian."),
             TextEntry::make('publish_conversations_warning')
                 ->hiddenLabel()
-                ->state('Las conversaciones pueden regresar al inicio si desaparece su etapa. Las respuestas gratuitas ya usadas (turns_used) no se reinician.'),
+                ->state(GuidedFunnel::isGuided($definition)
+                    ? 'Las conversaciones en curso siguen con esta instrucción, sin repetir el mensaje inicial. Las respuestas gratuitas ya usadas no se reinician.'
+                    : 'Las conversaciones pueden regresar al inicio si desaparece su etapa. Las respuestas gratuitas ya usadas (turns_used) no se reinician.'),
             TextEntry::make('publish_differences')
                 ->label($active !== null ? "Cambios frente a la versión activa (v{$active->version})" : 'Cambios')
                 ->state($active !== null ? FunnelRestorePreview::differences($active->definition, $definition) : ['Este producto no tiene embudo activo: esta versión empezará a aplicarse a sus prospectos.'])
                 ->listWithLineBreaks(),
             TextEntry::make('publish_displaced')
                 ->label('Conversaciones en etapas que desaparecen')
+                ->visible(! GuidedFunnel::isGuided($definition))
                 ->state(self::displacedConversations($product, $definition))
                 ->listWithLineBreaks()
                 ->placeholder('Ninguna.'),

@@ -6,6 +6,7 @@ use App\Models\ConversationFunnelState;
 use App\Models\Product;
 use App\Models\SalesFunnel;
 use App\Platform\Commerce\SampleLedger;
+use App\Platform\Funnel\GuidedFunnel;
 use Filament\Infolists\Components\TextEntry;
 
 /**
@@ -62,6 +63,10 @@ class FunnelRestorePreview
      */
     public static function differences(array $active, array $version): array
     {
+        if (GuidedFunnel::isGuided($active) || GuidedFunnel::isGuided($version)) {
+            return self::guidedDifferences($active, $version);
+        }
+
         $lines = [];
 
         foreach ([
@@ -84,6 +89,35 @@ class FunnelRestorePreview
     }
 
     /**
+     * The same comparison in the words of a funnel written as one instruction.
+     *
+     * @param  array<string, mixed>  $active
+     * @param  array<string, mixed>  $version
+     * @return list<string>
+     */
+    private static function guidedDifferences(array $active, array $version): array
+    {
+        $lines = [];
+
+        if (GuidedFunnel::isGuided($active) !== GuidedFunnel::isGuided($version)) {
+            $lines[] = GuidedFunnel::isGuided($version)
+                ? 'El embudo configurado por partes se reemplaza por una instrucción.'
+                : 'La instrucción se reemplaza por un embudo configurado por partes.';
+        } elseif (GuidedFunnel::instructions($active) !== GuidedFunnel::instructions($version)) {
+            $lines[] = 'Instrucciones para la IA: '.self::shown(GuidedFunnel::instructions($active)).' → '.self::shown(GuidedFunnel::instructions($version));
+        }
+
+        $from = $active['free_replies']['limit'] ?? 0;
+        $to = $version['free_replies']['limit'] ?? 0;
+
+        if ($from !== $to) {
+            $lines[] = 'Respuestas gratuitas: '.self::shown($from).' → '.self::shown($to);
+        }
+
+        return $lines !== [] ? $lines : ['Sin diferencias de configuración.'];
+    }
+
+    /**
      * @return list<string>
      */
     private static function impact(Product $product, ?SalesFunnel $active, SalesFunnel $version): array
@@ -92,7 +126,7 @@ class FunnelRestorePreview
         $keys = array_column($version->definition['stages'] ?? [], 'key');
         $displaced = ConversationFunnelState::where('product_id', $product->id)->whereNotIn('stage', $keys)->count();
 
-        if ($displaced > 0) {
+        if ($displaced > 0 && ! GuidedFunnel::isGuided($version->definition)) {
             $lines[] = "{$displaced} conversación(es) están en etapas que esta versión no tiene: volverán a la etapa inicial, sin repetir el mensaje inicial.";
         }
 
