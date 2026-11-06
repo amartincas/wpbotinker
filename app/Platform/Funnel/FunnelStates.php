@@ -50,6 +50,51 @@ class FunnelStates
     }
 
     /**
+     * Takes one of the conversation's model reads after its free replies, under
+     * the row's lock: however many messages arrive at once, no more than $max
+     * are taken. A retry of the same inbound message keeps the read it took.
+     *
+     * @return bool whether this message may call the model
+     */
+    public function takeLimitRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid, int $max): bool
+    {
+        return $this->withRetries($conversation, $product, function () use ($conversation, $product, $funnel, $stage, $wamid, $max) {
+            $id = ConversationFunnelState::firstOrCreate(
+                ['conversation_id' => $conversation->id, 'product_id' => $product->id],
+                ['sales_funnel_id' => $funnel->id, 'stage' => $stage, 'stage_interactions' => 0],
+            )->id;
+
+            return DB::transaction(function () use ($id, $wamid, $max) {
+                $state = ConversationFunnelState::whereKey($id)->lockForUpdate()->first();
+
+                if ($state === null) {
+                    return false;
+                }
+
+                $context = $state->context ?? [];
+                $wamids = $context['limit_read_wamids'] ?? [];
+
+                if ($wamid !== null && in_array($wamid, $wamids, true)) {
+                    return true;
+                }
+
+                $reads = (int) ($context['limit_reads'] ?? 0);
+
+                if ($reads >= $max) {
+                    return false;
+                }
+
+                $context['limit_reads'] = $reads + 1;
+                $context['limit_read_wamids'] = $wamid !== null ? [...$wamids, $wamid] : $wamids;
+
+                $state->update(['context' => $context]);
+
+                return true;
+            });
+        });
+    }
+
+    /**
      * @template T
      *
      * @param  callable(): T  $operation
@@ -109,7 +154,8 @@ class FunnelStates
             return $state;
         }
 
-        $state->fill(['sales_funnel_id' => $funnel->id, 'stage' => $stage, 'stage_interactions' => $stageInteractions, 'context' => $context]);
+        // Without a new context, the one it has stays: a save must not forget its counters.
+        $state->fill(['sales_funnel_id' => $funnel->id, 'stage' => $stage, 'stage_interactions' => $stageInteractions, 'context' => $context ?? $state->context]);
 
         if ($state->isDirty('stage')) {
             $state->stage_entered_at = now();

@@ -92,7 +92,11 @@ class SalesFunnelRunner
 
             if ($current->usesFreeReplies && $exhausted) {
                 if ($definition->guided) {
-                    return FunnelStep::read($definition, $current, $interactions);
+                    $action = GuidedFunnel::commercialAction($message);
+
+                    return $action !== null
+                        ? FunnelStep::action($definition, $action, $current->key, $interactions)
+                        : FunnelStep::read($definition, $current, $interactions);
                 }
 
                 $target = $definition->onFreeRepliesExhausted !== null ? $definition->stage($definition->onFreeRepliesExhausted) : null;
@@ -150,6 +154,22 @@ class SalesFunnelRunner
         }
 
         return new FunnelOutcome($stage->key, $interactions);
+    }
+
+    /**
+     * Whether a guided funnel may still call the model for this message, once
+     * the free replies are over. Without certainty it may not: the customer
+     * gets the Core's reply instead, and no call goes unaccounted.
+     */
+    public function takeLimitRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid): bool
+    {
+        try {
+            return $this->states->takeLimitRead($conversation, $product, $funnel, $stage, $wamid, max(0, (int) config('botinker.sales_funnels.guided.after_limit_reads', 5)));
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_LIMIT_READ_NOT_TAKEN', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+
+            return false;
+        }
     }
 
     /**

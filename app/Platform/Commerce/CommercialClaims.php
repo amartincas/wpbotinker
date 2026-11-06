@@ -40,6 +40,12 @@ final class CommercialClaims
             .'|\b(?:tu\s+)?(?:acceso|suscripci[oó]n|cuenta)\s+(?:ya\s+)?(?:est[aá]|queda|qued[oó])\s+(?:activ|habilitad|list)/iu',
     ];
 
+    /** What stands for the product's whole name while checking a reply: it cannot be read as an ordinary word. */
+    private const PRODUCT_REFERENCE = 'referenciadelproducto';
+
+    /** Shorter names are too likely to be ordinary words. */
+    private const MIN_NAME_LENGTH = 3;
+
     /** The kind of price or amount the text states, or null. */
     public function amount(string $text): ?string
     {
@@ -90,6 +96,117 @@ final class CommercialClaims
         }
 
         return null;
+    }
+
+    /**
+     * Why a guided funnel's reply after the free replies cannot go out, or
+     * null. It must invite to the plans and every part of it must be allowed: an
+     * opening recognition, a short mention of the service or a courtesy.
+     * Anything else counts as service, whatever else the sentence mentions.
+     * The product's whole name or an alias mentions the service; one word of it
+     * does not, as it may be an ordinary word of the topic. Conservative on
+     * purpose, like the rest of this class: a doubtful text gets the Core's
+     * fixed reply. This reduces what a model could give away; it cannot prove
+     * there is none.
+     *
+     * @param  string  $productName  what "gratis" must not be said about
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function limitReplyViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        if ($reason = $this->funnelViolation($text, $productName)) {
+            return $reason;
+        }
+
+        $rules = (array) config('botinker.sales_funnels.guided.after_limit_rules', []);
+        $names = $this->namePatterns([$productName, ...$aliases]);
+        $plain = preg_replace($names, self::PRODUCT_REFERENCE, Str::ascii(mb_strtolower($text)));
+        $rules['service_terms'] = [...(array) ($rules['service_terms'] ?? []), self::PRODUCT_REFERENCE];
+        $sentences = array_values(array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $plain)), fn (string $sentence) => $sentence !== ''));
+
+        return match (true) {
+            mb_strlen($text) > (int) ($rules['max_characters'] ?? 400) => 'too_long',
+            count($sentences) > (int) ($rules['max_sentences'] ?? 4) => 'too_many_sentences',
+            preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
+            $this->quotesAnExample($text, $names) => 'quoted_example',
+            $this->mentions($plain, (array) ($rules['instruction_terms'] ?? [])) => 'instruction',
+            ! $this->onlyAllowedClauses($sentences, $rules) => 'not_commercial',
+            ! $this->mentions($plain, (array) ($rules['commercial_terms'] ?? [])) => 'no_invitation',
+            default => null,
+        };
+    }
+
+    /**
+     * The whole names, longest first so an alias containing the name wins,
+     * as patterns over lowercase text without accents.
+     *
+     * @param  array<int, mixed>  $names
+     * @return list<string>
+     */
+    private function namePatterns(array $names): array
+    {
+        $words = array_map(fn ($name) => preg_split('/[^a-z0-9]+/', Str::ascii(mb_strtolower((string) $name)), -1, PREG_SPLIT_NO_EMPTY), $names);
+        $words = array_filter($words, fn (array $parts) => strlen(implode('', $parts)) >= self::MIN_NAME_LENGTH);
+
+        usort($words, fn (array $a, array $b) => strlen(implode('', $b)) <=> strlen(implode('', $a)));
+
+        return array_map(fn (array $parts) => '/\b'.implode('\W+', array_map(fn ($part) => preg_quote($part, '/'), $parts)).'\b/', $words);
+    }
+
+    /**
+     * A quoted phrase is an example, unless it is the product's own name.
+     *
+     * @param  list<string>  $names
+     */
+    private function quotesAnExample(string $text, array $names): bool
+    {
+        preg_match_all('/[«“"]([^»”"]*\s[^»”"]*)[»”"]/u', $text, $quotes);
+
+        foreach ($quotes[1] as $quote) {
+            if (trim((string) preg_replace($names, '', Str::ascii(mb_strtolower($quote)))) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $sentences
+     * @param  array<string, mixed>  $rules
+     */
+    private function onlyAllowedClauses(array $sentences, array $rules): bool
+    {
+        $service = [...(array) ($rules['commercial_terms'] ?? []), ...(array) ($rules['service_terms'] ?? [])];
+
+        foreach ($sentences as $index => $sentence) {
+            foreach (preg_split('/,|\s+(?:y|pero)\s+/u', $sentence) as $clause) {
+                $clause = trim($clause, " \t-()'\"");
+
+                $allowed = $clause === ''
+                    || in_array($clause, (array) ($rules['courtesies'] ?? []), true)
+                    || ($this->mentions($clause, $service) && mb_strlen($clause) <= (int) ($rules['max_service_characters'] ?? 100))
+                    || ($index === 0 && $this->startsWithAny($clause, (array) ($rules['acknowledgments'] ?? [])) && mb_strlen($clause) <= (int) ($rules['max_acknowledgment_characters'] ?? 50));
+
+                if (! $allowed) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /** @param  list<string>  $terms */
+    private function mentions(string $text, array $terms): bool
+    {
+        return $terms !== [] && preg_match('/\b(?:'.implode('|', array_map(fn ($term) => preg_quote((string) $term, '/'), $terms)).')\b/', $text) === 1;
+    }
+
+    /** @param  list<string>  $terms */
+    private function startsWithAny(string $text, array $terms): bool
+    {
+        return array_filter($terms, fn ($term) => preg_match('/^'.preg_quote((string) $term, '/').'\b/', $text) === 1) !== [];
     }
 
     /** What the text states that only the Core may state, or null. */

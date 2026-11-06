@@ -114,8 +114,46 @@ return [
                 'presentar_oferta' => 'Este es el momento de mostrarle los planes: el cliente los pide, o ya entendió cómo le ayuda el servicio y conviene presentárselos. '
                     .'El sistema los agrega después de tu respuesta, con sus precios. Si ya los vio en esta conversación y no los vuelve a pedir, no la elijas.',
             ],
-            'after_limit' => 'Las respuestas gratuitas de este cliente se agotaron: tu texto no se le enviará, así que deja "reply" vacío. '
+            'after_limit' => 'Las respuestas gratuitas de este cliente se agotaron: ya no resuelvas su consulta. '
+                .'En "reply", con tu tono habitual y en máximo tres frases cortas y :characters caracteres: empieza con un reconocimiento muy breve de lo que necesita (por ejemplo, «Entiendo» o «Te entiendo»), '
+                .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción. '
+                .'Después del reconocimiento, cada frase debe hablar del servicio (por esa palabra o por el nombre del producto), la suscripción o los planes, no del tema que pregunta. '
+                .'No des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista; no uses listas ni frases entre comillas; no inventes importes, beneficios ni condiciones. '
                 .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null.',
+            'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
+
+            // Model calls after the free replies, per conversation and product.
+            'after_limit_reads' => 5,
+
+            // What the Core requires of the model's reply after the free replies. Generic, for every domain.
+            'after_limit_rules' => [
+                'max_characters' => 400,
+                'max_sentences' => 4,
+                'max_service_characters' => 100,
+                'max_acknowledgment_characters' => 50,
+                'commercial_terms' => ['plan', 'planes', 'suscripcion', 'suscribirte', 'suscribete', 'activar', 'activa', 'acceso', 'opciones'],
+                'service_terms' => ['servicio'], // and the product's whole name or aliases, without listing them here
+                'acknowledgments' => ['entiendo', 'te entiendo', 'comprendo', 'te comprendo', 'buena pregunta', 'que buena pregunta', 'tiene sentido', 'es normal', 'es comun', 'es muy comun'],
+                'courtesies' => ['si quieres', 'si te interesa', 'si lo deseas', 'si gustas', 'cuando quieras', 'cuando lo decidas', 'sin presion', 'sin presiones', 'sin afan', 'con calma'],
+                'instruction_terms' => [
+                    'aprenderas a', 'te enseno', 'te ensenare', 'sabras como',
+                    'intenta', 'prueba', 'haz', 'usa', 'utiliza', 'practica', 'aplica', 'evita', 'observa', 'fijate', 'dile', 'preguntale', 'escribele',
+                    'empieza por', 'comienza por', 'debes', 'deberias', 'tienes que', 'te recomiendo', 'te sugiero', 'te aconsejo', 'lo mejor es',
+                    'la clave es', 'el secreto es', 'el truco', 'la tecnica', 'consiste en', 'por ejemplo', 'puedes decir', 'puedes probar',
+                    'paso a paso', 'primer paso', 'sigue estos', 'primero',
+                ],
+            ],
+
+            // Whole messages the Core serves after the free replies, without the model, whatever reads are left.
+            'purchase_phrases' => [
+                'Quiero mi acceso', 'Quiero acceso', 'Quiero el acceso', 'Quiero activar mi acceso', 'Activar mi acceso', 'Activa mi acceso',
+                'Quiero empezar', 'Quiero comenzar', 'Quiero empezar ya', 'Me animo', 'Lo quiero', 'Me apunto', 'Quiero contratar',
+                'Quiero entrar', 'Estoy listo para comenzar', 'Estoy listo para empezar', 'Quiero tener acceso', 'Dame acceso', 'Quiero acceder',
+            ],
+            'offer_phrases' => [
+                'Opciones', 'Ver opciones', 'Las opciones', 'Qué opciones hay', 'Cuáles son las opciones', 'Quiero ver las opciones', 'Muéstrame las opciones',
+                'Muéstrame otra vez las opciones', 'Muéstrame otra vez las opciones que hay',
+            ],
         ],
     ],
 

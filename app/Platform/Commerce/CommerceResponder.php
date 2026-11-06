@@ -321,14 +321,20 @@ class CommerceResponder
             return $this->offerText($product);
         }
 
-        $last = $conversation->offers_shown[(string) $product->id] ?? null;
-        $hours = max(0, (int) config('botinker.free_interactions.offer_interval_hours', 24));
-
-        if ($last !== null && $hours > 0 && Carbon::parse($last)->gt(now()->subHours($hours))) {
+        if ($this->offerRecentlyShown($product, $conversation)) {
             return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
         }
 
         return $this->offerText($product);
+    }
+
+    /** Whether this conversation saw the product's offer within the configured interval. */
+    public function offerRecentlyShown(Product $product, Conversation $conversation): bool
+    {
+        $last = $conversation->offers_shown[(string) $product->id] ?? null;
+        $hours = max(0, (int) config('botinker.free_interactions.offer_interval_hours', 24));
+
+        return $last !== null && $hours > 0 && Carbon::parse($last)->gt(now()->subHours($hours));
     }
 
     /** Asked for: the plan list is always shown, and counts as shown. */

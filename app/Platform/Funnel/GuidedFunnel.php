@@ -2,6 +2,8 @@
 
 namespace App\Platform\Funnel;
 
+use App\Platform\Commerce\OpeningMessage;
+
 /**
  * A funnel configured with one instruction in natural language: the definition
  * it publishes is an ordinary one, with a single stage and a fixed set of
@@ -53,6 +55,28 @@ final class GuidedFunnel
                 ],
             ]],
         ];
+    }
+
+    /**
+     * The operation a whole message asks for, in the configured phrases: what
+     * the Core can serve after the free replies without calling the model.
+     */
+    public static function commercialAction(string $message): ?string
+    {
+        $text = OpeningMessage::normalize($message);
+
+        foreach ([
+            FunnelDefinition::ACTION_START_PAYMENT => 'purchase_phrases',
+            FunnelDefinition::ACTION_SHOW_OFFER => 'offer_phrases',
+        ] as $action => $phrases) {
+            foreach ((array) config("botinker.sales_funnels.guided.{$phrases}", []) as $phrase) {
+                if (OpeningMessage::normalize((string) $phrase) === $text) {
+                    return $action;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

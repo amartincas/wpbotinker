@@ -207,7 +207,7 @@ class PromptAssembler
      *
      * @param  array<string, mixed>  $facts
      * @param  Collection<int, KnowledgeChunk>  $resources
-     * @param  bool  $freeRepliesOver  the model only reads the message: its text never goes out
+     * @param  bool  $freeRepliesOver  the model reads the message and only words a commercial reply
      */
     public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $freeRepliesOver = false): string
     {
@@ -243,6 +243,11 @@ class PromptAssembler
 
         if ($freeTurn !== null) {
             $prompt .= "\nEsta es la respuesta gratuita {$freeTurn->number} de {$freeTurn->limit} para este cliente.";
+
+            // The Core adds the offer to a guided funnel's last free reply.
+            if ($definition->guided && $freeTurn->isLast()) {
+                $prompt .= "\n".trim((string) config('botinker.free_interactions.strategy.last'));
+            }
         }
 
         $prompt .= "\n\n### CÓMO CONVERSAR\n".trim((string) config('botinker.sales_funnels.conversation_rules'));
@@ -287,7 +292,7 @@ class PromptAssembler
         }
 
         if ($freeRepliesOver) {
-            $prompt .= "\n\n".trim((string) config('botinker.sales_funnels.guided.after_limit'));
+            $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.after_limit')), [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)]);
         }
 
         return $prompt;

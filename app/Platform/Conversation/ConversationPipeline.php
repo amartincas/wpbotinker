@@ -315,13 +315,14 @@ class ConversationPipeline
         }
 
         if ($step->kind === FunnelStep::READ) {
-            $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access);
+            $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access, $wamid);
 
             return;
         }
 
         if ($step->kind === FunnelStep::ACTION && $step->action === FunnelDefinition::ACTION_START_PAYMENT) {
-            $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, false, $step->nextStage, $step->interactions);
+            // In a guided funnel only a plan the customer chose starts a payment, even with one plan to choose from.
+            $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, $step->definition->guided, $step->nextStage, $step->interactions);
 
             return;
         }
@@ -352,7 +353,7 @@ class ConversationPipeline
 
             if ($step->useFreeReply && $reservation === null) {
                 if ($step->definition->guided) {
-                    $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access);
+                    $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access, $wamid);
                 } else {
                     $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
                 }
@@ -405,8 +406,11 @@ class ConversationPipeline
 
             $parts = [$reply->reply, ...$knowledge['verbatim']];
 
-            if ($outcome->action === FunnelDefinition::ACTION_SHOW_OFFER) {
-                $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $outcome->action, true);
+            // A guided funnel's last free reply always closes with the offer.
+            $showsOffer = $outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || ($step->definition->guided && $freeTurn?->isLast());
+
+            if ($showsOffer) {
+                $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, FunnelDefinition::ACTION_SHOW_OFFER, true);
             }
 
             if ($outcome->text !== null) {
@@ -414,7 +418,7 @@ class ConversationPipeline
             }
 
             $this->deliverTurn($store, $from, $messageBody, implode("\n\n", $parts), $domain->key());
-            $this->afterFunnelOffer($outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || str_contains((string) $outcome->text, '{planes}'), $conversation, $product);
+            $this->afterFunnelOffer($showsOffer || str_contains((string) $outcome->text, '{planes}'), $conversation, $product);
             $this->forgetSample($store, $wamid);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
         } catch (Throwable $e) {
@@ -427,48 +431,78 @@ class ConversationPipeline
 
     /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
     /**
-     * A guided funnel without free replies left. The model only reads what the
-     * customer wants, without material and at most once per message: its text
-     * never goes out, so this gives no service. Whatever it does not propose,
-     * or if it fails, the customer gets the Core's own deterministic reply.
+     * A guided funnel without free replies left. While the conversation has
+     * reads left, one model call, without material or history, reads what the customer
+     * wants and words a commercial reply that the Core validates. Without reads,
+     * if the model fails or if its reply does not pass, the customer gets the
+     * Core's fixed reply, which says how to see the plans and pay.
      */
-    private function readAfterFreeReplies(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access): void
+    private function readAfterFreeReplies(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access, ?string $wamid): void
     {
         $outcome = null;
+        $reply = null;
+        $canRead = $this->funnels->takeLimitRead($conversation, $product, $funnel, $step->stage->key, $wamid);
 
-        try {
-            $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
-            $raw = AIServiceFactory::make($store)->getResponse(
-                $messageBody,
-                $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), freeRepliesOver: true),
-                $this->history($store, $from, $domain->key()),
-            );
-            $reply = StageReply::parse($raw, true, $step->definition->intents);
-            $outcome = $this->funnels->afterReply($step, $reply);
+        if ($canRead) {
+            try {
+                // A retry of the same message reuses the answer already generated.
+                $raw = $this->rememberedSample($store, $wamid);
 
-            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action]);
-        } catch (Throwable $e) {
-            Log::warning('FUNNEL_LIMIT_READ_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+                if ($raw === null) {
+                    $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
+                    $raw = AIServiceFactory::make($store)->getResponse(
+                        $messageBody,
+                        $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), freeRepliesOver: true),
+                        [], // never the history: it holds what the free replies already taught
+                    );
+                    $this->rememberSample($store, $wamid, $raw);
+                }
+
+                $reply = StageReply::parse($raw, true, $step->definition->intents);
+                $outcome = $this->funnels->afterReply($step, $reply);
+            } catch (Throwable $e) {
+                Log::warning('FUNNEL_LIMIT_READ_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+            }
         }
 
         if ($outcome?->action === FunnelDefinition::ACTION_START_PAYMENT) {
+            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action, 'discarded' => null]);
             $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
+            $this->forgetSample($store, $wamid);
 
             return;
         }
 
         if ($outcome?->action === FunnelDefinition::ACTION_SHOW_OFFER) {
+            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action, 'discarded' => null]);
             $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $outcome->action, true), $domain->key());
             $this->afterFunnelOffer(true, $conversation, $product);
+            $this->forgetSample($store, $wamid);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
 
             return;
         }
 
-        $text = $this->commerce->blockedReply($store, $product, $access, $conversation);
+        $violation = $reply?->reply !== null ? $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases) : 'empty';
+
+        if ($outcome !== null) {
+            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => null, 'discarded' => $violation]);
+        } elseif (! $canRead) {
+            Log::info('FUNNEL_LIMIT_READS_EXHAUSTED', ['store_id' => $store->id, 'product_id' => $product->id]);
+        }
+
+        if ($outcome !== null && $violation === null) {
+            // The model already invited: the plans only join if they were not just shown.
+            $text = $this->commerce->offerRecentlyShown($product, $conversation)
+                ? $reply->reply
+                : $reply->reply."\n\n".$this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation);
+        } else {
+            $text = trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation);
+        }
 
         $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
         $this->commerce->recordOfferIfSent($conversation, $product, $text);
+        $this->forgetSample($store, $wamid);
     }
 
     private function releaseFunnelReply(?SampleDelivery &$reservation): void
@@ -872,6 +906,7 @@ class ConversationPipeline
             ->where('customer_phone', $from)
             ->where('domain_key', $domainKey)
             ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->limit(self::HISTORY_LIMIT)
             ->get(['role', 'content'])
             ->reverse()

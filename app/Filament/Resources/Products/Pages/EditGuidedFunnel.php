@@ -55,7 +55,7 @@ class EditGuidedFunnel extends EditProductFunnel
                     ->validationMessages(['required' => 'Escribe las instrucciones para la IA.', 'max' => 'Las instrucciones no pueden superar '.GuidedFunnel::MAX_INSTRUCTIONS_LENGTH.' caracteres.']),
                 TextInput::make('free_replies')
                     ->label('Cantidad de respuestas gratuitas')
-                    ->helperText('Por cliente; no se reinicia. Al agotarse, el cliente aún puede pedir los planes y comprar, pero la IA deja de conversar.')
+                    ->helperText('Por cliente; no se reinicia. Al agotarse, el cliente aún puede pedir los planes y comprar, y la IA ya no resuelve consultas: solo orienta hacia la suscripción, un número limitado de veces.')
                     ->required()
                     ->integer()
                     ->minValue(1)

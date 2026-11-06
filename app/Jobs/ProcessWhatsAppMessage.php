@@ -272,6 +272,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
             $rawHistory = WhatsAppMessage::where('store_id', $this->store->id)
                 ->where('customer_phone', $this->from)
                 ->orderBy('created_at', 'desc')
+                ->orderBy('id', 'desc')
                 ->limit(10)
                 ->get(['id', 'role', 'content', 'created_at']);
 
@@ -1458,6 +1459,7 @@ PROMPT;
         return WhatsAppMessage::where('store_id', $this->store->id)
             ->where('customer_phone', $this->from)
             ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->limit(10)
             ->get(['role', 'content'])
             ->reverse()

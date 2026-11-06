@@ -18,9 +18,10 @@ final class FunnelStep
     public const CONVERSE = 'converse';
 
     /**
-     * A guided funnel without free replies left: the model only reads the
-     * message, so a customer can still ask for the plans or buy in their own
-     * words. Its text never goes out.
+     * A guided funnel without free replies left: in one call, the model reads
+     * the message, so a customer can still ask for the plans or buy in their
+     * own words, and words a commercial reply, which the Core validates. It
+     * never receives material, and the calls are limited per conversation.
      */
     public const READ = 'read';
 
