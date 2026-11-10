@@ -50,12 +50,7 @@ class StoreMessenger
                 // Inside the window; or no template configured: best effort.
                 : WhatsAppService::sendMessage($to, $text, $store);
 
-            if ($wamid !== null) {
-                WhatsAppMessage::create([
-                    'store_id' => $store->id, 'customer_phone' => $to, 'role' => 'assistant', 'domain_key' => $domainKey,
-                    'content' => $text, 'wamid' => $wamid, 'status' => 'pending', 'status_updated_at' => now(),
-                ]);
-            }
+            $this->record($store, $to, $text, $domainKey, $wamid);
 
             Log::info('STORE_MESSAGE_SENT', ['store_id' => $store->id, 'event_key' => $eventKey, 'channel' => $template ? 'template' : 'text', 'success' => $wamid !== null]);
 
@@ -64,6 +59,44 @@ class StoreMessenger
             Log::error('STORE_MESSAGE_FAILED', ['store_id' => $store->id, 'event_key' => $eventKey, 'error' => $e::class]);
 
             return null;
+        }
+    }
+
+    /**
+     * Free text only while the window is open: never a template, never text
+     * outside it. Null when the window is closed or the send fails; the
+     * message is recorded only with the id WhatsApp returned.
+     */
+    public function sendInWindow(Store $store, string $to, string $text, string $eventKey, ?string $domainKey = null): ?string
+    {
+        try {
+            if (! $this->windowOpen($store, $to)) {
+                Log::info('STORE_MESSAGE_WINDOW_CLOSED', ['store_id' => $store->id, 'event_key' => $eventKey]);
+
+                return null;
+            }
+
+            $wamid = WhatsAppService::sendMessage($to, $text, $store);
+
+            $this->record($store, $to, $text, $domainKey, $wamid);
+
+            Log::info('STORE_MESSAGE_SENT', ['store_id' => $store->id, 'event_key' => $eventKey, 'channel' => 'text', 'success' => $wamid !== null]);
+
+            return $wamid;
+        } catch (\Throwable $e) {
+            Log::error('STORE_MESSAGE_FAILED', ['store_id' => $store->id, 'event_key' => $eventKey, 'error' => $e::class]);
+
+            return null;
+        }
+    }
+
+    private function record(Store $store, string $to, string $text, ?string $domainKey, ?string $wamid): void
+    {
+        if ($wamid !== null) {
+            WhatsAppMessage::create([
+                'store_id' => $store->id, 'customer_phone' => $to, 'role' => 'assistant', 'domain_key' => $domainKey,
+                'content' => $text, 'wamid' => $wamid, 'status' => 'pending', 'status_updated_at' => now(),
+            ]);
         }
     }
 

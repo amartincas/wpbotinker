@@ -249,6 +249,8 @@ class ProcessWhatsAppMessage implements ShouldQueue
 
                 app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId);
 
+                SendProspectReactivation::scheduleFor($this->store, $this->from);
+
                 return;
             }
 

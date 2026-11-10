@@ -26,6 +26,8 @@ class Conversation extends Model
             'last_session_at' => 'datetime',
             'pending_state' => 'array',
             'offers_shown' => 'array',
+            'reactivation_episode_at' => 'datetime',
+            'reactivation_opted_out_at' => 'datetime',
         ];
     }
 

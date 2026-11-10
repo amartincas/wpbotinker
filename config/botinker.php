@@ -154,6 +154,27 @@ return [
                 'Opciones', 'Ver opciones', 'Las opciones', 'Qué opciones hay', 'Cuáles son las opciones', 'Quiero ver las opciones', 'Muéstrame las opciones',
                 'Muéstrame otra vez las opciones', 'Muéstrame otra vez las opciones que hay',
             ],
+
+            /*
+            | The automatic reactivation (App\Jobs\SendProspectReactivation).
+            | A refusal is the customer's whole last message and only cancels
+            | the current episode; an objection ("lo voy a pensar") is not one.
+            | A stop request is also the whole message, greetings and courtesies
+            | aside (inside a longer one it may quote someone or concern another
+            | service), and ends automatic reactivations for that conversation
+            | for good.
+            */
+            'decline_phrases' => [
+                'No gracias', 'No me interesa', 'Ya no me interesa', 'No estoy interesado', 'No estoy interesada',
+                'No quiero', 'Ya no quiero', 'No lo quiero', 'No lo necesito', 'No necesito nada',
+            ],
+            'stop_phrases' => [
+                'No me escribas más', 'No me escriban más', 'No me vuelvas a escribir', 'No me vuelvan a escribir',
+                'Deja de escribirme', 'Dejen de escribirme', 'Deja de enviarme mensajes', 'Dejen de enviarme mensajes',
+                'No me envíes más mensajes', 'No me envíen más mensajes', 'No me mandes más mensajes', 'No me manden más mensajes',
+                'No quiero recibir más mensajes', 'No me contactes más', 'No me contacten más',
+                'Dame de baja', 'Denme de baja', 'Darme de baja', 'Stop',
+            ],
         ],
     ],
 

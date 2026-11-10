@@ -3,6 +3,7 @@
 namespace App\Platform\Funnel;
 
 use App\Platform\Commerce\OpeningMessage;
+use Illuminate\Support\Str;
 
 /**
  * A funnel configured with one instruction in natural language: the definition
@@ -20,15 +21,23 @@ final class GuidedFunnel
 
     public const MAX_INSTRUCTIONS_LENGTH = 20000;
 
+    public const MAX_REACTIVATION_LENGTH = 1000;
+
+    public const DEFAULT_REACTIVATION_HOURS = 2;
+
+    /** Under WhatsApp's 24-hour window, with StoreMessenger's margin. */
+    public const MAX_REACTIVATION_HOURS = 23;
+
     /**
      * Every context a stage can read: KnowledgeAccess keeps the subscribers'
      * knowledge out of reach whatever this lists.
      *
      * @return array<string, mixed>
      */
-    public static function definition(string $instructions, int $freeReplies): array
+    public static function definition(string $instructions, int $freeReplies, ?string $reactivationMessage = null, int $reactivationHours = self::DEFAULT_REACTIVATION_HOURS): array
     {
         $texts = config('botinker.sales_funnels.guided');
+        $reactivationMessage = trim((string) $reactivationMessage);
 
         return [
             'guided' => true,
@@ -54,7 +63,77 @@ final class GuidedFunnel
                     ['when' => [FunnelDefinition::WHEN_INTENT => self::INTENT_OFFER], 'then' => ['action' => FunnelDefinition::ACTION_SHOW_OFFER]],
                 ],
             ]],
+            // Without a message there is no reactivation, and no key.
+            ...($reactivationMessage !== '' ? ['reactivation' => ['message' => $reactivationMessage, 'after_hours' => $reactivationHours]] : []),
         ];
+    }
+
+    /**
+     * The reactivation a guided definition configures: its literal message and
+     * the hours of silence before it. Null when it is not guided or has none.
+     *
+     * @param  array<string, mixed>  $definition  as stored
+     * @return array{message: string, after_hours: int}|null
+     */
+    public static function reactivation(array $definition): ?array
+    {
+        $reactivation = self::isGuided($definition) ? ($definition['reactivation'] ?? null) : null;
+        $message = trim((string) ($reactivation['message'] ?? ''));
+        $hours = $reactivation['after_hours'] ?? null;
+
+        if ($message === '' || ! is_int($hours) || $hours < 1 || $hours > self::MAX_REACTIVATION_HOURS) {
+            return null;
+        }
+
+        return ['message' => $message, 'after_hours' => $hours];
+    }
+
+    /** The whole message is one of the configured refusals: it ends this episode. */
+    public static function declines(string $message): bool
+    {
+        $text = self::plain($message);
+
+        foreach ((array) config('botinker.sales_funnels.guided.decline_phrases', []) as $phrase) {
+            if (self::plain((string) $phrase) === $text) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The whole message, greetings and courtesies aside, is a request not to be
+     * written to again. Within a longer message the same words may quote
+     * someone else or concern another service.
+     */
+    public static function asksToStop(string $message): bool
+    {
+        $text = self::withoutCourtesies(self::plain($message));
+
+        foreach ((array) config('botinker.sales_funnels.guided.stop_phrases', []) as $phrase) {
+            $phrase = self::plain((string) $phrase);
+
+            if ($phrase !== '' && $phrase === $text) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** "hola por favor no me escribas mas gracias" is "no me escribas mas". */
+    private static function withoutCourtesies(string $text): string
+    {
+        $courtesy = '(?:hola|buenas tardes|buenas noches|buenos dias|buen dia|buenas|saludos|por favor|muchas gracias|gracias)';
+
+        return trim((string) preg_replace(["/^(?:{$courtesy}\s+)+/", "/(?:\s+{$courtesy})+$/"], '', $text));
+    }
+
+    /** Lowercase words without accents or punctuation: "No, gracias." is "no gracias". */
+    private static function plain(string $text): string
+    {
+        return trim((string) preg_replace('/[^a-z0-9]+/', ' ', Str::ascii(mb_strtolower($text))));
     }
 
     /**

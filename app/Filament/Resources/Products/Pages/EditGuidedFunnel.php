@@ -27,11 +27,15 @@ class EditGuidedFunnel extends EditProductFunnel
         $this->baseVersion = $base?->version;
         $this->activeIdOnOpening = app(SalesFunnelVersions::class)->active($this->product())?->id;
 
+        $reactivation = GuidedFunnel::reactivation($base->definition ?? []);
+
         $this->form->fill([
             'instructions' => GuidedFunnel::instructions($base->definition ?? []),
             'free_replies' => GuidedFunnel::instructions($base->definition ?? []) !== null
                 ? $base->definition['free_replies']['limit']
                 : max(1, (int) config('botinker.free_interactions.max', 3)),
+            'reactivation_message' => $reactivation['message'] ?? null,
+            'reactivation_hours' => $reactivation['after_hours'] ?? GuidedFunnel::DEFAULT_REACTIVATION_HOURS,
         ]);
     }
 
@@ -66,6 +70,25 @@ class EditGuidedFunnel extends EditProductFunnel
                         'min' => 'Debe ser al menos 1: es lo que limita a la IA.',
                         'max' => 'No puede superar 255.',
                     ]),
+                Textarea::make('reactivation_message')
+                    ->label('Mensaje de reactivación')
+                    ->helperText('Se envía tal cual, una sola vez, a quien aún no se ha suscrito y deja de responder. Vacío desactiva la reactivación. No se envía a quien rechazó continuar o pidió no recibir más mensajes, ni fuera de la ventana de 24 horas de WhatsApp.')
+                    ->rows(3)
+                    ->maxLength(GuidedFunnel::MAX_REACTIVATION_LENGTH)
+                    ->validationMessages(['max' => 'El mensaje no puede superar '.GuidedFunnel::MAX_REACTIVATION_LENGTH.' caracteres.']),
+                TextInput::make('reactivation_hours')
+                    ->label('Horas sin respuesta antes de reactivar')
+                    ->helperText('Desde el último mensaje del cliente. Entre 1 y '.GuidedFunnel::MAX_REACTIVATION_HOURS.' horas.')
+                    ->required()
+                    ->integer()
+                    ->minValue(1)
+                    ->maxValue(GuidedFunnel::MAX_REACTIVATION_HOURS)
+                    ->validationMessages([
+                        'required' => 'Indica las horas sin respuesta.',
+                        'integer' => 'Escribe un número entero.',
+                        'min' => 'Debe ser al menos 1 hora.',
+                        'max' => 'No puede superar '.GuidedFunnel::MAX_REACTIVATION_HOURS.' horas: después se cierra la ventana de WhatsApp.',
+                    ]),
             ])
             ->statePath('data');
     }
@@ -77,7 +100,7 @@ class EditGuidedFunnel extends EditProductFunnel
     {
         $state = $this->form->getState();
 
-        return GuidedFunnel::definition($state['instructions'], (int) $state['free_replies']);
+        return GuidedFunnel::definition($state['instructions'], (int) $state['free_replies'], $state['reactivation_message'] ?? null, (int) $state['reactivation_hours']);
     }
 
     /**

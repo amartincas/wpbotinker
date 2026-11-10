@@ -148,6 +148,10 @@ final class FunnelDefinition
             self::assertGuided($stages);
         }
 
+        if (array_key_exists('reactivation', $definition)) {
+            self::assertReactivation($definition['reactivation'], $guided);
+        }
+
         return new self(
             $name, $goal, $start, $stages, $intents, $limit, $onExhausted,
             $cta !== null ? trim($cta) : null,
@@ -171,6 +175,25 @@ final class FunnelDefinition
 
         if (mb_strlen($stage->instructions) > GuidedFunnel::MAX_INSTRUCTIONS_LENGTH) {
             throw new InvalidArgumentException('The instructions of a guided funnel are too long.');
+        }
+    }
+
+    /** Only a guided funnel reactivates, with a literal message inside WhatsApp's window. */
+    private static function assertReactivation(mixed $reactivation, bool $guided): void
+    {
+        if (! $guided) {
+            throw new InvalidArgumentException('Only a guided funnel can configure a reactivation.');
+        }
+
+        $message = is_array($reactivation) ? ($reactivation['message'] ?? null) : null;
+        $hours = is_array($reactivation) ? ($reactivation['after_hours'] ?? null) : null;
+
+        if (! is_string($message) || trim($message) === '' || mb_strlen($message) > GuidedFunnel::MAX_REACTIVATION_LENGTH) {
+            throw new InvalidArgumentException('reactivation.message must be a text of up to '.GuidedFunnel::MAX_REACTIVATION_LENGTH.' characters.');
+        }
+
+        if (! is_int($hours) || $hours < 1 || $hours > GuidedFunnel::MAX_REACTIVATION_HOURS) {
+            throw new InvalidArgumentException('reactivation.after_hours must be a whole number from 1 to '.GuidedFunnel::MAX_REACTIVATION_HOURS.'.');
         }
     }
 
