@@ -38,8 +38,9 @@ use Throwable;
  * and never retried.
  *
  * Only for prospects without a subscription (NO_SUBSCRIPTION), with no open
- * payment, no human operator, nothing pending, no refusal in this episode
- * and no stop request ever. It reads nothing else and changes nothing else.
+ * payment, a free reply left (the message may invite to use it), no human
+ * operator, nothing pending, no refusal in this episode and no stop request
+ * ever. It reads nothing else and changes nothing else.
  */
 class SendProspectReactivation implements ShouldQueue
 {
@@ -211,6 +212,11 @@ class SendProspectReactivation implements ShouldQueue
 
         if ($decision->openPayment !== null) {
             return 'open_payment';
+        }
+
+        // The reactivation may invite to ask a free question: never to who has none left.
+        if (! $decision->sampleAvailable) {
+            return 'no_free_reply';
         }
 
         $last = WhatsAppMessage::where('store_id', $this->storeId)

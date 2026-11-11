@@ -64,7 +64,7 @@ class PromptAssembler
         .'El cliente aún no tiene acceso al servicio.'
         ."\n- Lo indicado en PROCESO COMERCIAL prevalece sobre cualquier otra indicación comercial de la tienda, del dominio o del producto, pero no sobre estos límites ni sobre las reglas del sistema."
         ."\n- Tus afirmaciones sobre el producto deben estar en la información de arriba o en el material autorizado; si no están, dilo y no las inventes."
-        ."\n- Puedes nombrar los planes y comparar su duración, pero no menciones precios, importes, descuentos, medios ni condiciones de pago: el sistema los agrega cuando corresponde."
+        ."\n- Puedes nombrar los planes y comparar su duración. No escribas precios, importes, descuentos, medios ni condiciones de pago: los oficiales los muestra el sistema desde el catálogo. Si el cliente quiere conocerlos o el proceso comercial indica presentarlos, propón presentar_oferta; nunca digas que no puedes darlos."
         ."\n- No afirmes que el cliente tiene acceso ni que su pago o su suscripción quedaron listos.";
 
     public function __construct(private readonly PersonFacts $personFacts) {}
@@ -156,6 +156,34 @@ class PromptAssembler
     }
 
     /**
+     * The system prompt of the check of a commercial turn's own wording
+     * (config sales_funnels.guided.claims_check): the approved facts are the
+     * product's description and FAQ, its plans and its commercial resources;
+     * the funnel's instruction goes apart, as how to sell, which backs only
+     * the facts it states.
+     *
+     * @param  Collection<int, KnowledgeChunk>  $resources
+     */
+    public function buildClaimsCheck(Product $product, string $instructions, string $plans, Collection $resources): string
+    {
+        $prompt = trim((string) config('botinker.sales_funnels.guided.claims_check'))
+            ."\n\n### HECHOS APROBADOS\nProducto: ".$this->singleLine($this->neutralize($product->name));
+
+        foreach (['Descripción' => $product->description, 'Información operativa' => $product->faq_context, 'Planes' => $plans] as $label => $value) {
+            if (filled($value)) {
+                $prompt .= "\n{$label}: ".trim($this->neutralize((string) $value));
+            }
+        }
+
+        foreach ($resources as $chunk) {
+            $heading = $chunk->heading ? $this->singleLine($this->neutralize($chunk->heading)).': ' : '';
+            $prompt .= "\n- {$heading}".$this->singleLine($this->neutralize($chunk->content));
+        }
+
+        return $prompt."\n\n### INSTRUCCIÓN COMERCIAL\n".trim($this->neutralize($instructions));
+    }
+
+    /**
      * The system prompt of a commercial reply to a customer without access:
      * store persona, product, the product's commercial instructions, the
      * customer facts the domain may read and the selected commercial
@@ -207,9 +235,9 @@ class PromptAssembler
      *
      * @param  array<string, mixed>  $facts
      * @param  Collection<int, KnowledgeChunk>  $resources
-     * @param  bool  $freeRepliesOver  the model reads the message and only words a commercial reply
+     * @param  bool  $commercialTurn  a commercial turn of a guided funnel (config sales_funnels.guided.commercial_turn)
      */
-    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $freeRepliesOver = false): string
+    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $commercialTurn = false): string
     {
         $prompt = trim($this->neutralize($store->system_prompt ?? '')) ?: 'You are an assistant.';
 
@@ -291,8 +319,8 @@ class PromptAssembler
             }
         }
 
-        if ($freeRepliesOver) {
-            $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.after_limit')), [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)]);
+        if ($commercialTurn) {
+            $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.commercial_turn')), [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)]);
         }
 
         return $prompt;

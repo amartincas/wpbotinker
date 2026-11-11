@@ -29,13 +29,20 @@ use App\Models\Subscription;
 use App\Models\Topic;
 use App\Models\User;
 use App\Models\WhatsAppMessage;
+use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\CommercialClaims;
+use App\Platform\Commerce\SampleLedger;
+use App\Platform\Conversation\PromptAssembler;
 use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStates;
 use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelVersions;
 use App\Platform\Funnel\StageReply;
 use App\Platform\Knowledge\KnowledgeIngestor;
+use App\Platform\Knowledge\KnowledgePlanner;
+use App\Platform\Knowledge\KnowledgeRetriever;
+use App\Platform\Memory\CustomerMemory;
+use App\Platform\Memory\PersonFacts;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -50,9 +57,15 @@ beforeEach(function () {
 
     $this->replies = [];
     $this->prompts = [];
+    $this->turns = [];
+    $this->turnPrompts = [];
     $this->selectorCalls = 0;
     $this->chats = [];
     $this->sections = [];
+    $this->needsKnowledge = true;
+    $this->verdicts = [];
+    $this->verifierPrompts = [];
+    $this->verifierDown = false;
     $this->modelDown = false;
     $this->selectorDown = false;
     $this->whatsAppDown = false;
@@ -69,11 +82,27 @@ beforeEach(function () {
                     return Http::response(['error' => 'upstream'], 500);
                 }
 
-                return Http::response(['choices' => [['message' => ['content' => json_encode(['needs_knowledge' => true, 'sections' => $this->sections])]]]]);
+                return Http::response(['choices' => [['message' => ['content' => json_encode(['needs_knowledge' => $this->needsKnowledge, 'sections' => $this->sections])]]]]);
+            }
+
+            if (str_contains($system, 'Eres un verificador')) {
+                $this->verifierPrompts[] = $system;
+
+                return $this->verifierDown
+                    ? Http::response(['error' => 'upstream'], 500)
+                    : Http::response(['choices' => [['message' => ['content' => array_shift($this->verdicts) ?? json_encode(['claims' => []])]]]]);
             }
 
             if ($this->modelDown) {
                 return Http::response(['error' => 'upstream'], 500);
+            }
+
+            // Every message of the stage is first a commercial turn, with its own answers: by
+            // default it reads a request for content, which the free reply answers while there is one.
+            if (str_contains($system, 'Este es un turno comercial')) {
+                $this->turnPrompts[] = $system;
+
+                return Http::response(['choices' => [['message' => ['content' => array_shift($this->turns) ?? gfJson('', question: 'contenido')]]]]);
             }
 
             $this->prompts[] = $system;
@@ -129,6 +158,28 @@ function gfLastPrompt(): string
     $prompts = test()->prompts;
 
     return end($prompts);
+}
+
+function gfLastTurnPrompt(): string
+{
+    $prompts = test()->turnPrompts;
+
+    return end($prompts);
+}
+
+function gfGraceReads(): int
+{
+    return (int) (ConversationFunnelState::where('product_id', test()->product->id)->first()?->context['grace_reads'] ?? 0);
+}
+
+/** The conversation's five commercial turns, already spent. */
+function gfSpendReads(): void
+{
+    $conversation = Conversation::firstOrCreate(['store_id' => test()->store->id, 'customer_phone' => GF_PHONE]);
+
+    foreach (range(1, 5) as $read) {
+        app(FunnelStates::class)->takeLimitRead($conversation, test()->product, test()->product->activeFunnel(), GuidedFunnel::STAGE, "wamid.gastado.{$read}", 5);
+    }
 }
 
 function gfReads(): int
@@ -476,7 +527,7 @@ describe('the conversation', function () {
         $this->product->update(['opening_message' => 'APERTURA-LITERAL', 'opening_triggers' => ['Quiero más información']]);
 
         gfSay('Quiero más información');
-        expect(gfLast())->toBe('APERTURA-LITERAL')->and($this->prompts)->toBe([])->and(gfTurns())->toBe(0);
+        expect(gfLast())->toBe('APERTURA-LITERAL')->and($this->turnPrompts)->toBe([])->and(gfTurns())->toBe(0);
 
         gfSay('Quiero más información');
         expect(gfLast())->toBe('RESPUESTA-DEL-MODELO')->and(gfTurns())->toBe(1);
@@ -490,13 +541,13 @@ describe('after the free replies', function () {
     });
 
     it('stops conversing: a reply that gives advice does not go out, and nothing is spent', function () {
-        $this->replies = [gfJson('Te doy otro consejo gratis.')];
+        $this->turns = [gfJson('Te doy otro consejo gratis.')];
 
         gfSay('Cuéntame más cosas');
 
         expect(gfLast())->not->toContain('consejo')->toContain(config('botinker.sales_funnels.guided.limit_reply'))->not->toContain('necesitas una suscripción')
             ->and(gfTurns())->toBe(1)
-            ->and(gfLastPrompt())->toContain('ya no resuelvas su consulta')
+            ->and(gfLastTurnPrompt())->toContain('no resuelvas peticiones del contenido del servicio')
             ->and(Payment::count())->toBe(0);
     });
 
@@ -508,7 +559,7 @@ describe('after the free replies', function () {
     });
 
     it('buys in the customer\'s own words', function () {
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
 
         gfSay('Va, me quedo con esto');
 
@@ -524,7 +575,7 @@ describe('after the free replies', function () {
     it('shows the plans when asked in the customer\'s own words, even right after showing them', function () {
         gfSay('Cuéntame más');
 
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9)];
 
         gfSay('Muéstrame otra vez las opciones que hay');
 
@@ -532,25 +583,25 @@ describe('after the free replies', function () {
     });
 
     it('still takes a plan by its name and the exact words, with no model call', function () {
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
 
         gfSay('Quiero el mensual');
 
         expect(Payment::first()->plan->name)->toBe('Mensual')
-            ->and($this->prompts)->toHaveCount($calls);
+            ->and($this->turnPrompts)->toHaveCount($calls);
     });
 
     it('costs one model call per message: no selector and no commercial advisor, whatever the product has', function () {
         gfSource('Comercial', 'CONTENIDO-COMERCIAL', KnowledgeSource::PURPOSE_COMMERCIAL);
         gfSource('Muestra', 'CONTENIDO-MUESTRA', KnowledgeSource::PURPOSE_SAMPLE);
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
         $selectors = $this->selectorCalls;
 
         gfSay('Háblame de lo que incluye');
 
-        expect($this->prompts)->toHaveCount($calls + 1)
+        expect($this->turnPrompts)->toHaveCount($calls + 1)
             ->and($this->selectorCalls)->toBe($selectors)
-            ->and(gfLastPrompt())->not->toContain('CONTENIDO-COMERCIAL')->not->toContain('CONTENIDO-MUESTRA');
+            ->and(gfLastTurnPrompt())->not->toContain('CONTENIDO-COMERCIAL')->not->toContain('CONTENIDO-MUESTRA');
     });
 
     it('falls back on the Core\'s reply when the model fails', function () {
@@ -563,7 +614,7 @@ describe('after the free replies', function () {
     });
 
     it('does not take a broken answer as a purchase', function () {
-        $this->replies = ['{"intent": "comprar", roto'];
+        $this->turns = ['{"intent": "comprar", roto'];
 
         gfSay('Cuéntame más');
 
@@ -571,7 +622,7 @@ describe('after the free replies', function () {
     });
 
     it('grants nothing by itself: a purchase ends in a pending payment, with no access', function () {
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
 
         gfSay('Va, me quedo con esto');
         gfSay('1');
@@ -579,10 +630,10 @@ describe('after the free replies', function () {
         expect(Payment::first()->status)->toBe(Payment::STATUS_PENDING)
             ->and(Subscription::count())->toBe(0);
 
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
         gfSay('Tengo una duda');
 
-        expect(gfLast())->toContain('INSTRUCCIONES-PAGO')->and($this->prompts)->toHaveCount($calls);
+        expect(gfLast())->toContain('INSTRUCCIONES-PAGO')->and($this->turnPrompts)->toHaveCount($calls);
     });
 });
 
@@ -650,7 +701,7 @@ describe('the reply after the limit', function () {
     });
 
     it('is kind, and never carries an invalid model reply nor the access message', function () {
-        $this->replies = [gfJson('CONTENIDO-GENERADO-POR-IA')];
+        $this->turns = [gfJson('CONTENIDO-GENERADO-POR-IA')];
 
         gfSay('¿Cómo identifico sus señales?');
 
@@ -663,11 +714,21 @@ describe('the reply after the limit', function () {
 
     it('shows the plans again once the offer is no longer recent, only for a commercial question', function () {
         $this->travel(25)->hours();
-        $this->replies = [gfJson('CONTENIDO-GENERADO-POR-IA', question: 'comercial')];
+        $this->turns = [gfJson('ARGUMENTO-DEL-PROCESO-COMERCIAL', question: 'comercial')];
 
         gfSay('¿Cómo se paga?');
 
-        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toContain('$9.900')->toContain('$19.900');
+        // Without verbatim resources, a commercial question gets the funnel's own wording.
+        expect(gfLast())->toStartWith('ARGUMENTO-DEL-PROCESO-COMERCIAL')->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('gives the fixed reply to a commercial question whose wording does not pass', function () {
+        $this->travel(25)->hours();
+        $this->turns = [gfJson('Hoy te sale en $5.000.', question: 'comercial')];
+
+        gfSay('¿Cómo se paga?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->not->toContain('5.000')->toContain('$19.900');
     });
 
     it('never adds the plan list to any other question, however old the offer: only how to ask for it', function () {
@@ -695,24 +756,24 @@ describe('the commercial replies after the limit', function () {
         expect(gfTurns())->toBe(3)
             ->and(gfLast())->toContain('$9.900')
             ->and(gfReads())->toBe(0)
-            ->and($this->prompts)->toHaveCount(3);
+            ->and($this->turnPrompts)->toHaveCount(3);
     });
 
     it('sends up to five commercial replies from the model, spending no free reply, and then the fixed message', function () {
         foreach (range(1, 5) as $read) {
-            $this->replies = [gfJson($this->comercial)];
+            $this->turns = [gfJson($this->comercial)];
 
             gfSay("¿Cómo identifico sus señales? {$read}");
 
             expect(gfLast())->toBe($this->comercial)->and(gfReads())->toBe($read);
         }
 
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
 
         gfSay('¿Y cómo le pido su número?');
 
         expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toContain('Escribe «planes»')
-            ->and($this->prompts)->toHaveCount($calls)
+            ->and($this->turnPrompts)->toHaveCount($calls)
             ->and(gfReads())->toBe(5)
             ->and(gfTurns())->toBe(3);
     });
@@ -721,22 +782,22 @@ describe('the commercial replies after the limit', function () {
         gfSource('Exclusivo', 'CONTENIDO-EXCLUSIVO', KnowledgeSource::PURPOSE_KNOWLEDGE);
         gfSource('Muestra', 'CONTENIDO-MUESTRA', KnowledgeSource::PURPOSE_SAMPLE);
         gfSource('Comercial', 'CONTENIDO-COMERCIAL', KnowledgeSource::PURPOSE_COMMERCIAL);
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
         $selectors = $this->selectorCalls;
-        $this->replies = [gfJson($this->comercial)];
+        $this->turns = [gfJson($this->comercial)];
 
         gfSay('Enséñame todo sobre las señales');
 
-        expect($this->prompts)->toHaveCount($calls + 1)
+        expect($this->turnPrompts)->toHaveCount($calls + 1)
             ->and($this->selectorCalls)->toBe($selectors)
-            ->and(gfLastPrompt())
+            ->and(gfLastTurnPrompt())
             ->not->toContain('CONTENIDO-EXCLUSIVO')->not->toContain('CONTENIDO-MUESTRA')->not->toContain('CONTENIDO-COMERCIAL')->not->toContain('MATERIAL AUTORIZADO')
-            ->toContain('No des técnicas, pasos, ejemplos, ejercicios')
+            ->toContain('no des técnicas, pasos, ejemplos, ejercicios')
             ->toContain('INSTRUCCION-DEL-ADMINISTRADOR');
     });
 
     it('replaces educational content with the fixed message', function () {
-        $this->replies = [gfJson('Fíjate en su mirada. Intenta mantener el contacto visual. Después conoce los planes.')];
+        $this->turns = [gfJson('Fíjate en su mirada. Intenta mantener el contacto visual. Después conoce los planes.')];
 
         gfSay('¿Cómo identifico sus señales?');
 
@@ -745,14 +806,14 @@ describe('the commercial replies after the limit', function () {
     });
 
     it('adds the plans to a commercial question only when they were not just shown', function () {
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
         $this->travel(25)->hours();
 
         gfSay('¿Cómo funciona la suscripción?');
 
         expect(gfLast())->toStartWith($this->comercial)->toContain('$9.900')->toContain('$19.900');
 
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
 
         gfSay('¿Y se renueva sola?');
 
@@ -760,7 +821,7 @@ describe('the commercial replies after the limit', function () {
     });
 
     it('adds to any other question only how to ask for the plans, when they were not just shown', function () {
-        $this->replies = [gfJson($this->comercial)];
+        $this->turns = [gfJson($this->comercial)];
         $this->travel(25)->hours();
 
         gfSay('¿Cómo identifico sus señales?');
@@ -769,7 +830,7 @@ describe('the commercial replies after the limit', function () {
     });
 
     it('still reads a purchase in the customer\'s words while reads are left, spending one', function () {
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
 
         gfSay('Va, me quedo con esto');
 
@@ -777,12 +838,12 @@ describe('the commercial replies after the limit', function () {
     });
 
     it('serves what the Core recognizes without a call and without spending a read', function (string $message, string $expected) {
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
 
         gfSay($message);
 
         expect(gfLast())->toContain($expected)
-            ->and($this->prompts)->toHaveCount($calls)
+            ->and($this->turnPrompts)->toHaveCount($calls)
             ->and(gfReads())->toBe(0);
     })->with([
         'precios' => ['¿Cuánto cuesta?', '$19.900'],
@@ -799,14 +860,14 @@ describe('the commercial replies after the limit', function () {
                 gfSay("Pregunta {$read}");
             }
 
-            $this->callsBefore = count($this->prompts);
+            $this->callsBefore = count($this->turnPrompts);
         });
 
         it('keeps the plans, the prices and every purchase available, without the model', function (string $message, string $expected) {
             gfSay($message);
 
             expect(gfLast())->toContain($expected)
-                ->and($this->prompts)->toHaveCount($this->callsBefore)
+                ->and($this->turnPrompts)->toHaveCount($this->callsBefore)
                 ->and(gfReads())->toBe(5);
         })->with([
             'precios' => ['¿Cuánto cuesta?', '$19.900'],
@@ -822,26 +883,26 @@ describe('the commercial replies after the limit', function () {
 
             expect(Payment::first()->plan->name)->toBe('Mensual')
                 ->and(gfLast())->toContain('INSTRUCCIONES-PAGO')
-                ->and($this->prompts)->toHaveCount($this->callsBefore);
+                ->and($this->turnPrompts)->toHaveCount($this->callsBefore);
         });
 
         it('starts the payment for a plan by its name', function () {
             gfSay('Quiero el semanal');
 
-            expect(Payment::first()->plan->name)->toBe('Semanal')->and($this->prompts)->toHaveCount($this->callsBefore);
+            expect(Payment::first()->plan->name)->toBe('Semanal')->and($this->turnPrompts)->toHaveCount($this->callsBefore);
         });
 
         it('answers an ambiguous expression with a simple way to go on', function () {
             gfSay('Pues creo que sí me interesa');
 
             expect(gfLast())->toContain('Escribe «planes» para ver los precios o «pagar» para suscribirte.')
-                ->and($this->prompts)->toHaveCount($this->callsBefore);
+                ->and($this->turnPrompts)->toHaveCount($this->callsBefore);
         });
     });
 
     it('does not count twice a message retried after a failed delivery, nor call the model again', function () {
-        $this->replies = [gfJson($this->comercial)];
-        $calls = count($this->prompts);
+        $this->turns = [gfJson($this->comercial)];
+        $calls = count($this->turnPrompts);
         $this->whatsAppDown = true;
 
         expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo identifico sus señales?', 'wamid.reintento', 'text', null))->toThrow(RuntimeException::class);
@@ -851,7 +912,7 @@ describe('the commercial replies after the limit', function () {
         ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo identifico sus señales?', 'wamid.reintento', 'text', null);
 
         expect(gfReads())->toBe(1)
-            ->and($this->prompts)->toHaveCount($calls + 1)
+            ->and($this->turnPrompts)->toHaveCount($calls + 1)
             ->and(gfLast())->toBe($this->comercial);
     });
 
@@ -895,11 +956,11 @@ describe('the question after the limit', function () {
     it('asks the model for the question, in the field the Core reads', function () {
         gfSay('¿Cómo identifico sus señales?');
 
-        expect(gfLastPrompt())->toContain('"question": "comercial"')->toContain('"contenido"');
+        expect(gfLastTurnPrompt())->toContain('"question": "comercial"')->toContain('"contenido"');
     });
 
     it('shows the offer the model proposes for a commercial question', function () {
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
 
         gfSay('¿Qué opciones de pago tienen?');
 
@@ -909,7 +970,7 @@ describe('the question after the limit', function () {
     it('never shows the offer unless the question was read as commercial, however old the offer', function (string $raw) {
         Log::spy();
         $this->travel(25)->hours();
-        $this->replies = [$raw];
+        $this->turns = [$raw];
 
         gfSay('¿Cómo identifico sus señales?');
 
@@ -925,7 +986,7 @@ describe('the question after the limit', function () {
     ]);
 
     it('takes "ok, lo tomo" right after the offer as a purchase, with no question read', function () {
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9)];
 
         gfSay('Ok, lo tomo');
 
@@ -934,7 +995,7 @@ describe('the question after the limit', function () {
 
     it('takes a purchase read as commercial, even with no recent offer', function () {
         $this->travel(25)->hours();
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9, 'comercial')];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9, 'comercial')];
 
         gfSay('Quiero comprarlo ya mismo');
 
@@ -942,7 +1003,7 @@ describe('the question after the limit', function () {
     });
 
     it('never starts a purchase for a content question or an ambiguous answer just because the offer is recent', function (string $raw, string $message) {
-        $this->replies = [$raw];
+        $this->turns = [$raw];
 
         gfSay($message);
 
@@ -959,7 +1020,7 @@ describe('the question after the limit', function () {
 
     it('never starts a purchase with no question read once the offer is no longer recent', function () {
         $this->travel(25)->hours();
-        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
 
         gfSay('Ok, lo tomo');
 
@@ -967,11 +1028,11 @@ describe('the question after the limit', function () {
     });
 
     it('keeps every action the Core recognizes, without the model', function (string $message, string $expected) {
-        $calls = count($this->prompts);
+        $calls = count($this->turnPrompts);
 
         gfSay($message);
 
-        expect(gfLast())->toContain($expected)->and($this->prompts)->toHaveCount($calls)->and(gfReads())->toBe(0);
+        expect(gfLast())->toContain($expected)->and($this->turnPrompts)->toHaveCount($calls)->and(gfReads())->toBe(0);
     })->with([
         'pagar' => ['Pagar', '¿Qué plan de «Asesor» quieres?'],
         'planes' => ['Planes', '$19.900'],
@@ -992,14 +1053,14 @@ describe('the literal commercial answers after the limit', function () {
     it('answers a commercial question with the verbatim resource exactly as written, within the same read', function () {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Qué incluye'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
-        $calls = count($this->prompts);
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
+        $calls = count($this->turnPrompts);
         $selectors = $this->selectorCalls;
 
         gfSay('¿Qué incluye el entrenamiento?');
 
         expect(gfLast())->toBe("TEXTO-LITERAL-APROBADO\n\n".$this->pointer)
-            ->and($this->prompts)->toHaveCount($calls + 1)
+            ->and($this->turnPrompts)->toHaveCount($calls + 1)
             ->and($this->selectorCalls)->toBe($selectors + 1)
             ->and(gfReads())->toBe(1)
             ->and(gfTurns())->toBe(1)
@@ -1010,7 +1071,7 @@ describe('the literal commercial answers after the limit', function () {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Qué incluye'];
         $this->travel(25)->hours();
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
 
         gfSay('¿Qué incluye el entrenamiento?');
 
@@ -1024,7 +1085,7 @@ describe('the literal commercial answers after the limit', function () {
         gfSource('Qué incluye', 'TEXTO-DE-MUESTRA', KnowledgeSource::PURPOSE_SAMPLE, KnowledgeSource::DELIVERY_VERBATIM);
         gfSource('Qué incluye', 'TEXTO-EXCLUSIVO', KnowledgeSource::PURPOSE_KNOWLEDGE);
         $this->sections = ['Qué incluye', 'Solo para redactar'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
         $this->chats = [];
 
         gfSay('¿Qué incluye el entrenamiento?');
@@ -1040,7 +1101,7 @@ describe('the literal commercial answers after the limit', function () {
             "# Precio\n\nCuesta $50.000 al mes.\n\n# Uno\n\nTEXTO-UNO\n\n# Dos\n\nTEXTO-DOS\n\n# Tres\n\nTEXTO-TRES",
             origin: 'origen-literal', purpose: KnowledgeSource::PURPOSE_COMMERCIAL, delivery: KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Precio', 'Uno', 'Dos', 'Tres'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
 
         gfSay('¿Qué incluye y cuánto cuesta?');
 
@@ -1050,7 +1111,7 @@ describe('the literal commercial answers after the limit', function () {
     it('says it has no confirmed information when nothing configured answers the question', function () {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = [];
-        $this->replies = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
+        $this->turns = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
 
         gfSay('¿El entrenamiento tiene garantía?');
 
@@ -1058,10 +1119,42 @@ describe('the literal commercial answers after the limit', function () {
             ->not->toContain('30 días')->not->toContain('TEXTO-LITERAL-APROBADO');
     });
 
+    it('lets the funnel answer an objection that needs no document, even with verbatim resources', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->needsKnowledge = false;
+        $this->turns = [gfJson('Te entiendo. Con el plan semanal puedes empezar con poco y ver cómo te acompaño.', question: 'comercial')];
+
+        gfSay('Es caro');
+
+        expect(gfLast())->toStartWith('Te entiendo. Con el plan semanal puedes empezar con poco')
+            ->not->toContain('TEXTO-LITERAL-APROBADO')->not->toContain(config('botinker.sales_funnels.guided.undocumented_reply'))
+            ->and($this->selectorCalls)->toBe(1);
+    });
+
+    it('still makes up nothing for an objection: a guarantee in the model\'s words does not go out', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->needsKnowledge = false;
+        $this->turns = [gfJson('Tranquilo, si no te funciona te devolvemos el dinero.', question: 'comercial')];
+
+        gfSay('¿Y si no me sirve?');
+
+        expect(gfLast())->not->toContain('devolvemos')->toStartWith(config('botinker.sales_funnels.guided.limit_reply'));
+    });
+
+    it('gives no content read as commercial by mistake, even when no document is needed', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->needsKnowledge = false;
+        $this->turns = [gfJson('Fíjate en su mirada y luego háblale de algo del lugar.', question: 'comercial')];
+
+        gfSay('¿Cómo sé si le gusto?');
+
+        expect(gfLast())->not->toContain('mirada')->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->and(gfTurns())->toBe(1);
+    });
+
     it('also counts a resource whose only match states an amount as nothing configured', function () {
         gfSource('Precio', 'Cuesta $50.000 al mes.', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Precio'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
 
         gfSay('¿Cuánto vale al mes el entrenamiento, más o menos?');
 
@@ -1071,7 +1164,7 @@ describe('the literal commercial answers after the limit', function () {
     it('never claims there is no information when the selection failed: the fixed reply goes', function () {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->selectorDown = true;
-        $this->replies = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
+        $this->turns = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
 
         gfSay('¿El entrenamiento tiene garantía?');
 
@@ -1082,7 +1175,7 @@ describe('the literal commercial answers after the limit', function () {
     it('keeps the current behaviour, with no selector call, when there is no verbatim commercial resource', function () {
         gfSource('Qué incluye', 'TEXTO-PARA-REDACTAR', KnowledgeSource::PURPOSE_COMMERCIAL);
         $this->sections = ['Qué incluye'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
         $selectors = $this->selectorCalls;
 
         gfSay('¿Qué incluye el entrenamiento?');
@@ -1094,7 +1187,7 @@ describe('the literal commercial answers after the limit', function () {
         $this->product->update(['commercial_instructions' => null]);
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Qué incluye'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
         $selectors = $this->selectorCalls;
 
         gfSay('¿Qué incluye el entrenamiento?');
@@ -1105,7 +1198,7 @@ describe('the literal commercial answers after the limit', function () {
     it('never consults the resources for a question that is not commercial', function (?string $question) {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Qué incluye'];
-        $this->replies = [gfJson($this->comercial, question: $question)];
+        $this->turns = [gfJson($this->comercial, question: $question)];
         $selectors = $this->selectorCalls;
 
         gfSay('¿Cómo identifico sus señales?');
@@ -1116,8 +1209,8 @@ describe('the literal commercial answers after the limit', function () {
     it('does not spend a second read nor send twice when a literal answer is retried after a failed delivery', function () {
         gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
         $this->sections = ['Qué incluye'];
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
-        $calls = count($this->prompts);
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
+        $calls = count($this->turnPrompts);
         $this->whatsAppDown = true;
 
         expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Qué incluye?', 'wamid.reintento', 'text', null))->toThrow(RuntimeException::class);
@@ -1131,7 +1224,7 @@ describe('the literal commercial answers after the limit', function () {
             && $response->successful());
 
         expect(gfReads())->toBe(1)
-            ->and($this->prompts)->toHaveCount($calls + 1)
+            ->and($this->turnPrompts)->toHaveCount($calls + 1)
             ->and($delivered)->toHaveCount(1)
             ->and(gfLast())->toBe("TEXTO-LITERAL-APROBADO\n\n".$this->pointer)
             ->and(gfTurns())->toBe(1);
@@ -1146,12 +1239,407 @@ describe('the literal commercial answers after the limit', function () {
             gfSay("Pregunta {$turn}");
         }
 
-        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->turns = [gfJson($this->comercial, question: 'comercial')];
 
         gfSay('¿Qué incluye el entrenamiento?');
 
         expect(gfTurns())->toBe($free)->and(gfLast())->toStartWith('TEXTO-LITERAL-APROBADO');
     })->with([1, 3]);
+});
+
+describe('the commercial turn', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+    });
+
+    it('tells the model the official prices come from the catalog, never to say it cannot give them, and gives it no amount', function () {
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLastTurnPrompt())->toContain('los oficiales los muestra el sistema desde el catálogo')->toContain('nunca digas que no puedes darlos')
+            ->toContain('INSTRUCCION-DEL-ADMINISTRADOR')->toContain('- Semanal: 7 días')
+            ->not->toContain('9.900')->not->toContain('19.900');
+    });
+
+    it('answers a commercial question in the funnel\'s words without spending the free reply', function () {
+        $this->turns = [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLast())->toStartWith('Te acompaño por WhatsApp durante tu suscripción.')
+            ->and(gfTurns())->toBe(0)
+            ->and($this->prompts)->toBe([])
+            ->and(gfReads())->toBe(1);
+    });
+
+    it('argues an objection in the funnel\'s words without spending the free reply', function () {
+        $this->turns = [gfJson('Te entiendo: con el plan semanal puedes empezar con poco.', question: 'comercial')];
+
+        gfSay('Es caro');
+
+        expect(gfLast())->toStartWith('Te entiendo: con el plan semanal puedes empezar con poco.')->and(gfTurns())->toBe(0);
+    });
+
+    it('spends the free reply only on a request for content, giving the turn\'s read back', function () {
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->toContain('$9.900')
+            ->and(gfTurns())->toBe(1)
+            ->and(gfReads())->toBe(0)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and($this->prompts)->toHaveCount(1)
+            ->and(gfLastPrompt())->toContain('Es su última respuesta gratuita');
+    });
+
+    it('answers content without a free reply left with the limit and how to ask for the plans', function () {
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+        $this->turns = [gfJson('Fíjate en su mirada y luego háblale.', question: 'contenido')];
+
+        gfSay('¿Y cómo le pido el número?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toEndWith($this->pointer)->not->toContain('mirada')
+            ->and(gfTurns())->toBe(1);
+    });
+
+    it('never spends the free reply on plans, prices, a plan chosen or a purchase', function (string $message, ?string $turn) {
+        $this->turns = $turn !== null ? [$turn] : [];
+
+        gfSay($message);
+
+        expect(gfTurns())->toBe(0)->and($this->prompts)->toBe([]);
+    })->with([
+        'precios' => ['¿Cuánto cuesta?', null],
+        'planes' => ['Planes', null],
+        'un plan por su nombre' => ['Quiero el semanal', null],
+        'una compra leída por el modelo' => ['Va, me quedo con esto', gfJson('', GuidedFunnel::INTENT_BUY, 0.95, 'comercial')],
+        'su frase de compra' => ['Quiero mi acceso', null],
+    ]);
+
+    it('gives no content in a turn the model did not classify, and says nothing about a limit not reached', function () {
+        $this->turns = [gfJson('Fíjate en su mirada y luego háblale.')];
+
+        gfSay('Mmm, no sé');
+
+        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0);
+    });
+
+    it('reads a request for content with a grace read once the reads ran out, and gives the free reply', function () {
+        gfSpendReads();
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')
+            ->and(gfTurns())->toBe(1)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and(gfReads())->toBe(5)
+            ->and(gfGraceReads())->toBe(0);
+    });
+
+    it('answers a commercial question with a grace read without spending the free reply, and then reads nothing more', function () {
+        gfSpendReads();
+        $this->turns = [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLast())->toStartWith('Te acompaño por WhatsApp durante tu suscripción.')
+            ->and(gfTurns())->toBe(0)
+            ->and(gfGraceReads())->toBe(1);
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toBe($this->pointer)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and($this->prompts)->toBe([])
+            ->and(gfTurns())->toBe(0);
+    });
+
+    it('gives nothing free to an ambiguous message read with grace, and spends nothing', function () {
+        gfSpendReads();
+        $this->turns = [gfJson('Fíjate en su mirada y luego háblale.')];
+
+        gfSay('Mmm, no sé');
+
+        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0)->and($this->prompts)->toBe([]);
+    });
+
+    it('reads nothing with grace once the free replies are over', function () {
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+        gfSpendReads();
+        $turns = count($this->turnPrompts);
+
+        gfSay('¿Y en una discoteca?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))
+            ->and($this->turnPrompts)->toHaveCount($turns)
+            ->and(gfTurns())->toBe(1);
+    });
+
+    it('keeps a reactivation\'s invitation once the grace was spent: one read for its answer', function () {
+        gfSpendReads();
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+        gfSay('¿Esto cómo funciona?');
+        Conversation::query()->update(['reactivation_episode_at' => now()->subHour()]);
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('Vale, te pregunto: ¿cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1);
+
+        gfSay('¿Y en una discoteca?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->and($this->turnPrompts)->toHaveCount(2);
+    });
+
+    it('grants one read per reactivation, not one per message', function () {
+        gfSpendReads();
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial'), gfJson('Sigo aquí para lo que necesites.', question: 'comercial')];
+        gfSay('¿Esto cómo funciona?');
+        Conversation::query()->update(['reactivation_episode_at' => now()->subHour()]);
+
+        gfSay('¿Y qué más?');
+        gfSay('¿Algo más?');
+
+        expect($this->turnPrompts)->toHaveCount(2)->and(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0);
+    });
+
+    it('bounds the grace by the free replies left, as each product configures them', function () {
+        gfPublish(free: 3);
+        gfSpendReads();
+        $this->turns = array_fill(0, 4, gfJson('Te acompaño por WhatsApp.', question: 'comercial'));
+
+        foreach (range(1, 4) as $message) {
+            gfSay("Pregunta comercial {$message}");
+        }
+
+        expect($this->turnPrompts)->toHaveCount(3)->and(gfGraceReads())->toBe(3)->and(gfTurns())->toBe(0);
+    });
+
+    it('gives a retried message the free reply it reserved before the worker died, spending it once', function () {
+        // The attempt that died had reserved the free reply and never sent it.
+        app(SampleLedger::class)->reserve(app(CustomerMemory::class)->customerFor($this->store, GF_PHONE), $this->product, 'wamid.muerto');
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo a una chica en un bar?', 'wamid.muerto', 'text', null);
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1);
+    });
+
+    it('gives it back too when the reads had run out and it was read with grace', function () {
+        gfSpendReads();
+        app(SampleLedger::class)->reserve(app(CustomerMemory::class)->customerFor($this->store, GF_PHONE), $this->product, 'wamid.muerto');
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo a una chica en un bar?', 'wamid.muerto', 'text', null);
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1)->and(gfGraceReads())->toBe(0);
+    });
+
+    it('never gives another message the free reply a message reserved', function () {
+        app(SampleLedger::class)->reserve(app(CustomerMemory::class)->customerFor($this->store, GF_PHONE), $this->product, 'wamid.otro');
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo a una chica en un bar?', 'wamid.nuevo', 'text', null);
+
+        expect(gfLast())->not->toContain('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1)->and($this->prompts)->toBe([]);
+    });
+
+    it('ties each reservation to its message: kept for a retry, never shared, gone once released or delivered', function () {
+        gfPublish(free: 3);
+        $ledger = app(SampleLedger::class);
+        $customer = app(CustomerMemory::class)->customerFor($this->store, GF_PHONE);
+
+        $first = $ledger->reserve($customer, $this->product, 'wamid.A');
+        $retried = $ledger->reserve($customer, $this->product, 'wamid.A');
+        $other = $ledger->reserve($customer, $this->product, 'wamid.B');
+
+        expect([$first->turns_used, $retried->id, $retried->turns_used, $other->turns_used, gfTurns()])->toBe([1, $first->id, 1, 2, 2]);
+
+        // Released (its send failed): the free reply comes back, and the message holds nothing any more.
+        $ledger->release($other, 'wamid.B');
+        expect(gfTurns())->toBe(1)->and($ledger->reserve($customer, $this->product, 'wamid.B')->turns_used)->toBe(2);
+
+        // Delivered: a later delivery of the same message gets no free reply for nothing.
+        $ledger->settle($customer, $this->product, 'wamid.A');
+        expect($ledger->reserve($customer, $this->product, 'wamid.A')->turns_used)->toBe(3);
+    });
+
+    it('does not take a second grace read, call the model again or send twice when a grace free reply is retried', function () {
+        gfSpendReads();
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo?', 'wamid.gracia', 'text', null))->toThrow(RuntimeException::class);
+
+        $this->whatsAppDown = false;
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo?', 'wamid.gracia', 'text', null);
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')
+            ->and(gfTurns())->toBe(1)
+            ->and(gfGraceReads())->toBe(0)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and($this->prompts)->toHaveCount(1);
+    });
+
+    it('gives the limit and how to ask for the plans once both the reads and the free replies ran out', function () {
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        gfSpendReads();
+
+        gfSay('¿Y en una discoteca?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toEndWith($this->pointer)->and(gfTurns())->toBe(1);
+    });
+
+    it('gives no free reply when the model failed to read the message', function () {
+        $this->modelDown = true;
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0);
+    });
+
+    it('closes the free reply with how to ask for the plans when they were just shown, not with them again', function () {
+        gfSay('Planes');
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLast())->toBe("CONTENIDO-DE-LA-RESPUESTA-GRATUITA\n\n".$this->pointer)->and(gfTurns())->toBe(1);
+    });
+
+    it('does not spend a second read, call the model again or send twice when a free reply is retried', function () {
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo?', 'wamid.reintento', 'text', null))->toThrow(RuntimeException::class);
+
+        expect(gfTurns())->toBe(0);
+
+        $this->whatsAppDown = false;
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo le hablo?', 'wamid.reintento', 'text', null);
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')
+            ->and(gfTurns())->toBe(1)
+            ->and(gfReads())->toBe(0)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and($this->prompts)->toHaveCount(1);
+    });
+});
+
+describe('the claims check', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        Log::spy();
+    });
+
+    it('checks a commercial wording against the approved facts, with the funnel\'s instruction apart', function () {
+        gfSource('Qué incluye', 'TEXTO-COMERCIAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL);
+        gfSource('Cómo funciona', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->needsKnowledge = false;
+        $this->turns = [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial')];
+
+        gfSay('Es caro');
+
+        $prompt = $this->verifierPrompts[0];
+
+        expect($this->verifierPrompts)->toHaveCount(1)
+            ->and($prompt)->toContain('### HECHOS APROBADOS')->toContain('DESCRIPCION-PRODUCTO')->toContain('FAQ-PRODUCTO')
+            ->toContain('1. Semanal: $9.900 COP por 7 días')->toContain('TEXTO-COMERCIAL-APROBADO')->toContain('TEXTO-LITERAL-APROBADO')
+            ->and(Str::before($prompt, '### INSTRUCCIÓN COMERCIAL'))->not->toContain('INSTRUCCION-DEL-ADMINISTRADOR')
+            ->and(Str::after($prompt, '### INSTRUCCIÓN COMERCIAL'))->toContain('INSTRUCCION-DEL-ADMINISTRADOR')
+            ->and(collect($this->chats)->last()[1]['content'])->toBe('Te acompaño por WhatsApp durante tu suscripción.');
+    });
+
+    it('logs what it finds, as counts only, and never changes the reply', function (string $reply, string $verdict, string $expected, int $claims, int $unsupported) {
+        $this->turns = [gfJson($reply, question: 'comercial')];
+        $this->verdicts = [$verdict];
+
+        gfSay('¿Cómo funciona?');
+
+        expect(gfLast())->toStartWith($reply);
+        Log::shouldHaveReceived('info')->with('FUNNEL_CLAIMS_CHECK', Mockery::on(fn (array $context) => $context['mode'] === 'observe' && $context['verdict'] === $expected && $context['claims'] === $claims && $context['unsupported'] === $unsupported
+            && array_keys($context) === ['store_id', 'product_id', 'mode', 'verdict', 'claims', 'unsupported']));
+    })->with([
+        'respaldada' => ['Te acompaño por WhatsApp.', json_encode(['claims' => [['text' => 'Te acompaño por WhatsApp', 'supported' => true]]]), 'supported', 1, 0],
+        'sin respaldo' => ['Incluye sesiones en vivo cada semana.', json_encode(['claims' => [['text' => 'Incluye sesiones en vivo cada semana', 'supported' => false]]]), 'unsupported', 1, 1],
+        'una condición sin documentar' => ['Puedes pausar la suscripción cuando quieras.', json_encode(['claims' => [['text' => 'Puedes pausar la suscripción cuando quieras', 'supported' => false]]]), 'unsupported', 1, 1],
+        'una indicación estratégica, sin hechos' => ['Lo importante es que des el primer paso con el plan semanal.', json_encode(['claims' => []]), 'no_claims', 0, 0],
+        'persuasión legítima' => ['Te entiendo: invertir en ti siempre vale más de lo que parece.', json_encode(['claims' => []]), 'no_claims', 0, 0],
+    ]);
+
+    it('checks a message once: its retry goes straight to the send', function () {
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo funciona?', 'wamid.verificado', 'text', null))->toThrow(RuntimeException::class);
+
+        $this->whatsAppDown = false;
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo funciona?', 'wamid.verificado', 'text', null);
+
+        expect($this->verifierPrompts)->toHaveCount(1)
+            ->and($this->turnPrompts)->toHaveCount(1)
+            ->and(gfLast())->toStartWith('Te acompaño por WhatsApp.');
+    });
+
+    it('checks before the reply goes out, so nothing it does can follow the send', function () {
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+
+        gfSay('¿Cómo funciona?');
+
+        $order = Http::recorded()->map(fn ($pair) => str_contains($pair[0]->url(), 'api.openai.com')
+            ? (str_contains($pair[0]->data()['messages'][0]['content'], 'Eres un verificador') ? 'verificador' : 'modelo')
+            : 'whatsapp')->values()->all();
+
+        expect($order)->toBe(['modelo', 'verificador', 'whatsapp']);
+    });
+
+    it('sends the reply once, as it was, when the check itself breaks unexpectedly', function () {
+        $advisor = Mockery::mock(CommercialAdvisor::class, [app(KnowledgeRetriever::class), app(KnowledgePlanner::class), app(PromptAssembler::class), app(CommercialClaims::class), app(PersonFacts::class)])->makePartial();
+        $advisor->shouldReceive('checkClaims')->andThrow(new RuntimeException('boom'));
+        app()->instance(CommercialAdvisor::class, $advisor);
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+
+        gfSay('¿Cómo funciona?');
+
+        expect(sentWhatsAppTexts())->toHaveCount(1)->and(gfLast())->toStartWith('Te acompaño por WhatsApp.');
+        Log::shouldHaveReceived('warning')->with('FUNNEL_CLAIMS_CHECK_FAILED', Mockery::on(fn (array $context) => $context['error'] === RuntimeException::class));
+    });
+
+    it('only logs that it could not check, and the reply goes out as it was', function (bool $down) {
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+        $down ? $this->verifierDown = true : $this->verdicts = ['no es un JSON'];
+
+        gfSay('¿Cómo funciona?');
+
+        expect(gfLast())->toStartWith('Te acompaño por WhatsApp.');
+        Log::shouldHaveReceived('warning')->with('FUNNEL_CLAIMS_CHECK_FAILED', Mockery::any());
+        Log::shouldNotHaveReceived('info', ['FUNNEL_CLAIMS_CHECK', Mockery::any()]);
+    })->with(['caído' => true, 'respuesta inválida' => false]);
+
+    it('checks nothing that is not the funnel\'s own commercial wording', function (Closure $arrange) {
+        $arrange($this);
+
+        gfSay('Una pregunta');
+
+        expect($this->verifierPrompts)->toBe([]);
+    })->with([
+        'una respuesta gratuita' => [fn ($test) => $test->replies = [gfJson('CONTENIDO')]],
+        'un texto literal' => [function ($test) {
+            gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+            $test->sections = ['Qué incluye'];
+            $test->turns = [gfJson('Te acompaño.', question: 'comercial')];
+        }],
+        'una respuesta sin clasificar' => [fn ($test) => $test->turns = [gfJson('Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes.')]],
+        'una respuesta descartada' => [fn ($test) => $test->turns = [gfJson('Hoy te sale en $5.000.', question: 'comercial')]],
+    ]);
 });
 
 describe('what the model receives after the limit', function () {
@@ -1162,18 +1650,22 @@ describe('what the model receives after the limit', function () {
         $this->chats = [];
     });
 
-    it('is the instruction, the product and the current message: no earlier message, and no material', function () {
+    it('is the instruction, the product, the conversation so far and the current message, with no material', function () {
         gfSource('Exclusivo', 'CONTENIDO-EXCLUSIVO', KnowledgeSource::PURPOSE_KNOWLEDGE);
         gfSource('Muestra', 'CONTENIDO-MUESTRA', KnowledgeSource::PURPOSE_SAMPLE);
 
         gfSay('MENSAJE-ACTUAL');
 
+        $chat = $this->chats[0];
+
         expect($this->chats)->toHaveCount(1)
-            ->and(array_column($this->chats[0], 'role'))->toBe(['system', 'user'])
-            ->and($this->chats[0][1]['content'])->toBe('MENSAJE-ACTUAL')
-            ->and($this->chats[0][0]['content'])
-            ->toContain('INSTRUCCION-DEL-ADMINISTRADOR')->toContain('DESCRIPCION-PRODUCTO')->toContain('FAQ-PRODUCTO')
-            ->not->toContain('CONSEJO-ANTERIOR-DE-MAX')->not->toContain('CONTENIDO-EXCLUSIVO')->not->toContain('CONTENIDO-MUESTRA');
+            ->and(array_column($chat, 'role'))->toBe(['system', 'user', 'assistant', 'user'])
+            ->and($chat[1]['content'])->toBe('PREGUNTA-ANTERIOR')
+            ->and($chat[2]['content'])->toStartWith('CONSEJO-ANTERIOR-DE-MAX')
+            ->and(end($chat)['content'])->toBe('MENSAJE-ACTUAL')
+            ->and($chat[0]['content'])
+            ->toContain('INSTRUCCION-DEL-ADMINISTRADOR')->toContain('DESCRIPCION-PRODUCTO')->toContain('FAQ-PRODUCTO')->toContain('Este es un turno comercial')
+            ->not->toContain('CONTENIDO-EXCLUSIVO')->not->toContain('CONTENIDO-MUESTRA');
     });
 
     it('leaves the stored history as it was', function () {
@@ -1273,7 +1765,7 @@ describe('confirming before a payment', function () {
         });
 
         it('also asks when the model reads the purchase', function () {
-            $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+            $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
 
             gfSay('Va, me quedo con esto');
 
@@ -1395,7 +1887,7 @@ describe('a reply after the limit, for any product', function () {
 
         foreach ([$reference, 'el Método de prueba'] as $mention) {
             $reply = "Te entiendo. Eso se trabaja en {$mention}. Si quieres, conoce los planes.";
-            $this->replies = [gfJson($reply)];
+            $this->turns = [gfJson($reply)];
 
             gfSay('¿Cómo lo hago?');
 
@@ -1414,6 +1906,37 @@ describe('a reply after the limit, for any product', function () {
             expect(str_contains($texts, $term))->toBeFalse("La configuración global menciona «{$term}».");
         }
     });
+});
+
+describe('what the funnel\'s own wording may say', function () {
+    it('lets selling through, however it is worded', function (string $reply) {
+        expect(app(CommercialClaims::class)->commercialWordingViolation($reply, 'Asesor'))->toBeNull();
+    })->with([
+        'prueba el plan' => 'Prueba el plan semanal y me cuentas cómo te va.',
+        'empieza por el plan' => 'Empieza por el plan semanal: es la forma más sencilla de arrancar.',
+        'te recomiendo la suscripción' => 'Te recomiendo la suscripción mensual si quieres más tiempo.',
+        'una objeción' => 'Te entiendo. Con el plan semanal puedes empezar con poco.',
+        'lo que hace el servicio' => 'Con el servicio te acompaño en tus conversaciones y resuelvo tus dudas.',
+        'el nombre del producto' => 'Usa Asesor durante una semana y decide después.',
+        'una garantía negada' => 'No te garantizo resultados: depende de cada persona.',
+        'sin reembolso' => 'Es un servicio sin reembolso, por eso puedes empezar con el plan semanal.',
+        'no hay reembolso' => 'No hay reembolso, pero puedes empezar con el plan semanal.',
+    ]);
+
+    it('stops content of the service and what only the approved material may promise', function (string $reply, string $reason) {
+        expect(app(CommercialClaims::class)->commercialWordingViolation($reply, 'Asesor'))->toBe($reason);
+    })->with([
+        'una técnica' => ['Prueba mirarla a los ojos cuando le hables.', 'instruction'],
+        'un paso' => ['Primero elige un lugar tranquilo para la cita.', 'instruction'],
+        'una técnica junto a una venta' => ['Prueba mirarla a los ojos y activa tu plan.', 'instruction'],
+        'una lista' => ["- Confianza\n- Carisma", 'list'],
+        'un ejemplo entre comillas' => ['La frase «me encanta tu estilo» funciona muy bien.', 'quoted_example'],
+        'una garantía' => ['Tiene garantía de 30 días.', 'unbacked_claim'],
+        'un reembolso condicionado' => ['Si no te funciona, te devolvemos el dinero.', 'unbacked_claim'],
+        'un reembolso condicionado, sin coma' => ['Si no te funciona te devolvemos el dinero.', 'unbacked_claim'],
+        'una garantía en primera persona' => ['Te garantizo que funciona.', 'unbacked_claim'],
+        'un importe' => ['Hoy te sale en $5.000.', 'currency'],
+    ]);
 });
 
 describe('what a reply after the limit may say', function () {

@@ -126,11 +126,23 @@ function mainChatRequests(): array
 }
 
 /**
- * Text messages sent to customers through the WhatsApp Cloud API.
+ * Text messages sent to customers through the WhatsApp Cloud API. A message
+ * with reply buttons counts too: its text is read at text.body like any
+ * other, and its buttons stay at interactive.action.buttons.
  */
 function sentWhatsAppTexts(): array
 {
     return Http::recorded(fn (Request $request) => str_ends_with($request->url(), '/messages')
-        && ($request->data()['type'] ?? null) === 'text')
-        ->map(fn ($pair) => $pair[0])->values()->all();
+        && in_array($request->data()['type'] ?? null, ['text', 'interactive'], true))
+        ->map(fn ($pair) => ($pair[0]->data()['type'] ?? null) === 'interactive' ? withTextBody($pair[0]) : $pair[0])
+        ->values()->all();
+}
+
+/** The same request with the interactive message's text also at text.body. */
+function withTextBody(Request $request): Request
+{
+    $data = $request->data();
+    $data['text'] = ['body' => $data['interactive']['body']['text'] ?? ''];
+
+    return new Request(new GuzzleHttp\Psr7\Request('POST', $request->url(), ['Content-Type' => 'application/json'], json_encode($data)));
 }

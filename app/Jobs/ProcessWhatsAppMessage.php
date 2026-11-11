@@ -57,6 +57,8 @@ class ProcessWhatsAppMessage implements ShouldQueue
         public ?int $productContext = null,
         /** Products sharing the ad the customer came from (2+): ask which one. */
         public ?array $adProductCandidates = null,
+        /** The id of the reply button the customer tapped (knowledge mode only). */
+        public ?string $choiceId = null,
     ) {}
 
     /**
@@ -247,7 +249,7 @@ class ProcessWhatsAppMessage implements ShouldQueue
                     return;
                 }
 
-                app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId);
+                app(ConversationPipeline::class)->handle($this->store, $this->from, (string) $this->messageBody, $this->productContext, $this->phoneId, $this->choiceId);
 
                 SendProspectReactivation::scheduleFor($this->store, $this->from);
 

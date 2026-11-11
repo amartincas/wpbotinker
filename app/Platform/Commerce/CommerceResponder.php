@@ -33,6 +33,16 @@ class CommerceResponder
     /** Hours a started payment waits for its receipt. */
     public const PAYMENT_WINDOW_HOURS = 48;
 
+    /** The id of a plan's reply button, before the plan's id. */
+    public const PLAN_CHOICE = 'plan:';
+
+    /** What WhatsApp accepts in a reply-buttons message. */
+    private const MAX_PLAN_BUTTONS = 3;
+
+    private const MAX_BUTTON_TITLE = 20;
+
+    private const MAX_BUTTON_BODY = 1024;
+
     private const INTENT_STATUS = 'status';
 
     private const INTENT_PRICES = 'prices';
@@ -136,6 +146,15 @@ class CommerceResponder
             $conversation->update(['pending_state' => null]);
         }
 
+        // Only a number, right after the plan list was shown: its plan in that list.
+        if ($target !== null && $target->requiresSubscription() && preg_match('/^\s*(\d{1,2})\s*\.?\s*$/', $text, $match)
+            && $this->offerRecentlyShown($target, $conversation) && ! $this->hasValidSubscription($customer, $target)
+            && ($plan = $this->plans($target)->get((int) $match[1] - 1)) !== null) {
+            Log::info('COMMERCE_REQUEST', ['store_id' => $store->id, 'customer_id' => $customer->id, 'product_id' => $target->id, 'intent' => 'plan_number']);
+
+            return $this->payFor($store, $conversation, $customer, $target, $plan);
+        }
+
         if ($target === null || ! $target->requiresSubscription() || ($intent = $this->intent($text, $target)) === null) {
             return null;
         }
@@ -150,6 +169,75 @@ class CommerceResponder
             self::INTENT_PAY => $this->pay($store, $conversation, $customer, $target, $text),
             self::INTENT_CLARIFY => $this->reply($target, 'Claro. Cuéntame tu duda y te ayudo. Cuando quieras pagar, escribe «pagar».'),
         };
+    }
+
+    /**
+     * The plan a customer picked with a reply button of a plan list
+     * (planButtons()), whose id is "plan:{id}". It counts only for the
+     * conversation's own product, among its active plans, for a customer
+     * without a valid subscription: anything else is not this choice, and
+     * null lets the button's title go on as text. A button that no longer
+     * fits (another product's, a deactivated plan) starts no payment: the
+     * customer is asked again, with the current plans.
+     */
+    public function choosePlan(Store $store, Conversation $conversation, Customer $customer, string $choice): ?CommerceReply
+    {
+        $product = $conversation->current_product_id ? Product::where('store_id', $store->id)->find($conversation->current_product_id) : null;
+
+        if ($product === null || ! $product->requiresSubscription() || $this->hasValidSubscription($customer, $product)) {
+            return null;
+        }
+
+        $id = preg_match('/^'.preg_quote(self::PLAN_CHOICE, '/').'(\d{1,18})$/', $choice, $match) === 1 ? (int) $match[1] : null;
+        $plan = $id !== null ? $this->plans($product)->firstWhere('id', $id) : null;
+
+        Log::info('COMMERCE_REQUEST', ['store_id' => $store->id, 'customer_id' => $customer->id, 'product_id' => $product->id, 'intent' => 'plan_button', 'valid' => $plan !== null]);
+
+        return $plan !== null
+            ? $this->payFor($store, $conversation, $customer, $product, $plan)
+            : $this->pay($store, $conversation, $customer, $product, '', confirmPlan: true);
+    }
+
+    /**
+     * A reply button per plan when $text carries the product's plan list and
+     * the customer has no valid subscription, within what WhatsApp accepts
+     * (MAX_PLAN_BUTTONS, unique titles of MAX_BUTTON_TITLE characters, a body
+     * of MAX_BUTTON_BODY); null otherwise, and the text goes alone.
+     *
+     * @return list<array{id: string, title: string}>|null
+     */
+    public function planButtons(?Product $product, ?Customer $customer, string $text): ?array
+    {
+        if ($product === null || $customer === null || ! $product->requiresSubscription() || mb_strlen($text) > self::MAX_BUTTON_BODY) {
+            return null;
+        }
+
+        $plans = $this->plans($product);
+        $titles = $plans->map(fn (Plan $plan) => trim((string) $plan->name));
+
+        if ($plans->isEmpty() || $plans->count() > self::MAX_PLAN_BUTTONS || ! str_contains($text, $this->planLines($plans))
+            || $titles->contains(fn (string $title) => $title === '' || mb_strlen($title) > self::MAX_BUTTON_TITLE)
+            || $titles->unique(fn (string $title) => mb_strtolower($title))->count() !== $titles->count()
+            || $this->hasValidSubscription($customer, $product)) {
+            return null;
+        }
+
+        return $plans->values()->map(fn (Plan $plan, int $i) => ['id' => self::PLAN_CHOICE.$plan->id, 'title' => $titles[$i]])->all();
+    }
+
+    /** The plan's payment, or the one already open for the product: never a second one. */
+    private function payFor(Store $store, Conversation $conversation, Customer $customer, Product $product, Plan $plan): CommerceReply
+    {
+        $open = $this->openPayment($customer, $product);
+
+        return $open !== null
+            ? $this->reply($product, $this->openPaymentText($store, $product, $open))
+            : $this->startPayment($store, $conversation, $customer, $product, $plan);
+    }
+
+    private function hasValidSubscription(Customer $customer, Product $product): bool
+    {
+        return (bool) Subscription::where('customer_id', $customer->id)->where('product_id', $product->id)->first()?->isValidAt();
     }
 
     /**
@@ -578,8 +666,10 @@ class CommerceResponder
     }
 
     /**
-     * The plans the message names, by their stored name. When one name is
-     * inside another ("Mensual" and "Mensual premium"), the longer one wins.
+     * The plans the message names, by their stored name or by their duration
+     * with its quantity ("7 días", "1 semana", "un mes"). When one name is
+     * inside another ("Mensual" and "Mensual premium"), the longer one wins;
+     * plans sharing a duration all match it, so a choice among them is asked.
      *
      * @param  Collection<int, Plan>  $plans
      * @return Collection<int, Plan>
@@ -587,11 +677,58 @@ class CommerceResponder
     private function namedPlans(string $text, Collection $plans): Collection
     {
         $text = preg_replace('/[^a-z0-9]+/', ' ', $text);
-        $matches = $plans->filter(fn (Plan $plan) => $this->planName($plan) !== '' && preg_match('/\b'.preg_quote($this->planName($plan), '/').'\b/', $text) === 1);
-
-        return $matches->reject(fn (Plan $plan) => $matches->contains(
+        $byName = $plans->filter(fn (Plan $plan) => $this->planName($plan) !== '' && preg_match('/\b'.preg_quote($this->planName($plan), '/').'\b/', $text) === 1);
+        $byName = $byName->reject(fn (Plan $plan) => $byName->contains(
             fn (Plan $other) => $other->id !== $plan->id && $this->planName($other) !== $this->planName($plan) && str_contains($this->planName($other), $this->planName($plan))
-        ))->values();
+        ));
+        $byDuration = $plans->filter(fn (Plan $plan) => array_filter($this->durationPatterns($plan), fn (string $pattern) => preg_match('/\b'.$pattern.'\b/', $text) === 1) !== []);
+
+        return $byName->merge($byDuration)->unique('id')->values();
+    }
+
+    /**
+     * How a message states a plan's duration, from its stored days: always
+     * with the quantity, so "esta semana" or "el mes que viene" name none.
+     *
+     * @return list<string> patterns over lowercase text without accents
+     */
+    private function durationPatterns(Plan $plan): array
+    {
+        $days = (int) $plan->duration_days;
+
+        if ($days < 1) {
+            return [];
+        }
+
+        $patterns = [$days === 1 ? '(?:1|un)\s+dia' : "{$days}\s+dias"];
+
+        if ($days % 7 === 0) {
+            $patterns[] = $days === 7 ? '(?:1|una)\s+semana' : ($days / 7).'\s+semanas';
+        }
+
+        if ($days >= 28 && $days <= 31) {
+            $patterns[] = '(?:1|un)\s+mes';
+        } elseif ($days % 30 === 0) {
+            $patterns[] = ($days / 30).'\s+meses';
+        }
+
+        return $patterns;
+    }
+
+    /**
+     * The words of a plan's duration, so a message made only of them chooses it.
+     *
+     * @return list<string>
+     */
+    private function durationWords(Plan $plan): array
+    {
+        $days = (int) $plan->duration_days;
+
+        return $days < 1 ? [] : array_map('strval', [
+            $days, 'dia', 'dias', 'un',
+            ...($days % 7 === 0 ? [$days / 7, 'una', 'semana', 'semanas'] : []),
+            ...($days >= 28 && $days <= 31 ? [1, 'mes'] : ($days % 30 === 0 ? [$days / 30, 'meses'] : [])),
+        ]);
     }
 
     /** "plan semanal" refers to a plan; "plan de comidas" or "mi plan" does not say which one. */
@@ -616,7 +753,7 @@ class CommerceResponder
      */
     private function planWords(Collection $plans): array
     {
-        return $plans->flatMap(fn (Plan $plan) => explode(' ', $this->planName($plan)))->values()->all();
+        return $plans->flatMap(fn (Plan $plan) => [...explode(' ', $this->planName($plan)), ...$this->durationWords($plan)])->values()->all();
     }
 
     /**

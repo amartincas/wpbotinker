@@ -111,7 +111,7 @@ function cxSentTo(string $phone): array
 
 function cxTextsTo(string $phone): array
 {
-    return array_values(array_map(fn ($data) => $data['text']['body'], array_filter(cxSentTo($phone), fn ($data) => ($data['type'] ?? null) === 'text')));
+    return array_values(array_map(fn ($data) => $data['text']['body'] ?? $data['interactive']['body']['text'], array_filter(cxSentTo($phone), fn ($data) => in_array($data['type'] ?? null, ['text', 'interactive'], true))));
 }
 
 function cxLastTo(string $phone): ?string

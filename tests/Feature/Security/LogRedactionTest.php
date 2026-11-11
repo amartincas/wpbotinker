@@ -11,9 +11,14 @@ use App\Jobs\ProcessWhatsAppMessage;
 use App\Livewire\WhatsAppChatCenter;
 use App\Models\Conversation;
 use App\Models\Lead;
+use App\Models\Plan;
 use App\Models\Product;
+use App\Models\Store;
+use App\Models\Topic;
 use App\Models\User;
 use App\Models\WhatsAppTemplate;
+use App\Platform\Funnel\GuidedFunnel;
+use App\Platform\Funnel\SalesFunnelVersions;
 use Illuminate\Http\Client\Request;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Event;
@@ -117,6 +122,34 @@ it('keeps template variables and lead data out of the logs when an operator send
         ->and(json_encode($sent[0][0]->data(), JSON_UNESCAPED_UNICODE))
         ->toContain('SECRETO-NOMBRE')
         ->toContain('SECRETO-GUIA');
+
+    assertNoSecretsLogged($this->logged);
+});
+
+it('keeps the reply and the claims it states out of the logs when a commercial wording is checked', function () {
+    $store = makeStore(['conversation_mode' => Store::MODE_KNOWLEDGE, 'system_prompt' => 'Eres el asesor. SECRETO-PROMPT', 'payment_instructions' => 'Pago']);
+    Topic::create(['store_id' => $store->id, 'key' => 'tema', 'label' => 'Tema', 'instructions' => 'Tema.']);
+    $product = Product::create(['store_id' => $store->id, 'domain_key' => 'tema', 'name' => 'Asesor', 'description' => 'Asesoría.', 'price' => 1, 'stock' => 1, 'access_mode' => Product::ACCESS_SUBSCRIPTION]);
+    Plan::create(['product_id' => $product->id, 'name' => 'Semanal', 'price' => 9900, 'duration_days' => 7]);
+    app(SalesFunnelVersions::class)->publish($product, GuidedFunnel::definition('Vende.', 1));
+
+    Http::fake(function (Request $request) {
+        if (! str_contains($request->url(), 'api.openai.com')) {
+            return Http::response(['messages' => [['id' => 'wamid.out.log']]]);
+        }
+
+        $answer = str_contains($request->data()['messages'][0]['content'], 'Eres un verificador')
+            ? ['claims' => [['text' => 'Incluye SECRETO-RESPUESTA', 'supported' => false]]]
+            : ['reply' => 'Incluye SECRETO-RESPUESTA cada semana.', 'intent' => null, 'confidence' => 0, 'question' => 'comercial'];
+
+        return Http::response(['choices' => [['message' => ['content' => json_encode($answer)]]]]);
+    });
+
+    ProcessWhatsAppMessage::dispatchSync($store, '573001112233', '¿Qué incluye? SECRETO-MENSAJE', 'wamid.log.claims');
+
+    // The check ran and was logged, with its counts only.
+    expect(collect($this->logged)->first(fn (string $line) => str_starts_with($line, 'FUNNEL_CLAIMS_CHECK ')))
+        ->toContain('"verdict":"unsupported"')->toContain('"claims":1')->toContain('"unsupported":1');
 
     assertNoSecretsLogged($this->logged);
 });

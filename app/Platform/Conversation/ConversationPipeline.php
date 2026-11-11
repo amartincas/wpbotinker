@@ -75,6 +75,11 @@ class ConversationPipeline
      */
     private bool $uncovered = false;
 
+    /** This turn's conversation and customer: who send() may add plan buttons for. */
+    private ?Conversation $conversation = null;
+
+    private $customer = null;
+
     public function __construct(
         private readonly ProductResolver $resolver,
         private readonly DomainRegistry $domains,
@@ -95,7 +100,10 @@ class ConversationPipeline
         private readonly CommercialClaims $claims,
     ) {}
 
-    public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null): void
+    /**
+     * @param  string|null  $choiceId  the id of the reply button the customer tapped, if the message is one
+     */
+    public function handle(Store $store, string $from, string $messageBody, ?int $adProductId = null, ?string $wamid = null, ?string $choiceId = null): void
     {
         $conversation = Conversation::firstOrCreate(
             ['store_id' => $store->id, 'customer_phone' => $from],
@@ -104,6 +112,16 @@ class ConversationPipeline
         $customer = $this->memory->customerFor($store, $from);
         $this->welcome = $this->welcomeFor($store, $from);
         $this->uncovered = false;
+        $this->conversation = $conversation;
+        $this->customer = $customer;
+
+        // A plan's button goes straight to its payment, before anything else
+        // reads the message: no free reply, no model.
+        if ($choiceId !== null && ($chosen = $this->commerce->choosePlan($store, $conversation, $customer, $choiceId)) !== null) {
+            $this->reply($store, $from, $messageBody, $chosen->text, $chosen->domainKey);
+
+            return;
+        }
 
         $pending = $this->facts->answerPending($conversation, $customer, $messageBody, $wamid);
 
@@ -315,7 +333,7 @@ class ConversationPipeline
         }
 
         if ($step->kind === FunnelStep::READ) {
-            $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access, $wamid);
+            $this->commercialTurn($store, $conversation, $from, $messageBody, $query, $customer, $product, $domain, $funnel, $step, $access, $wamid);
 
             return;
         }
@@ -335,25 +353,46 @@ class ConversationPipeline
             return;
         }
 
-        $reservation = null;
+        if ($step->kind === FunnelStep::LITERAL) {
+            $reservation = null;
 
-        try {
-            if ($step->kind === FunnelStep::LITERAL) {
+            try {
                 // A literal goes out as configured, in place of the store's welcome.
                 $this->welcome = null;
                 $reservation = $step->useFreeReply && $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
                 $this->deliverTurn($store, $from, $messageBody, $this->fillPlaceholders($step->text, $product), $domain->key());
                 $this->afterFunnelOffer(str_contains($step->text, '{planes}'), $conversation, $product);
                 $this->funnels->advance($conversation, $product, $funnel, $step->nextStage, 0);
+            } catch (Throwable $e) {
+                // Nothing was delivered: the free reply stays available and the state does not move.
+                $this->releaseFunnelReply($reservation);
 
-                return;
+                throw $e;
             }
 
-            $reservation = $step->useFreeReply ? $this->samples->reserve($customer, $product) : null;
+            return;
+        }
+
+        $this->converse($store, $conversation, $from, $messageBody, $query, $customer, $product, $domain, $funnel, $step, $access, $wamid);
+    }
+
+    /**
+     * A turn of the funnel's AI stage that spends a free reply when the step
+     * uses one; in a guided funnel, the free reply the Core granted to a
+     * request for content (see commercialTurn()).
+     */
+    private function converse(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access, ?string $wamid): void
+    {
+        $reservation = null;
+
+        try {
+            // Tied to this message: a retry, even after the worker died before sending, gets it back instead of another.
+            $reservation = $step->useFreeReply ? $this->samples->reserve($customer, $product, $wamid) : null;
 
             if ($step->useFreeReply && $reservation === null) {
                 if ($step->definition->guided) {
-                    $this->readAfterFreeReplies($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $access, $wamid);
+                    // Spent meanwhile: the request gets what any other without a free reply gets.
+                    $this->commercialTurn($store, $conversation, $from, $messageBody, $query, $customer, $product, $domain, $funnel, FunnelStep::read($step->definition, $step->stage, $step->interactions), $access, $wamid, mayGiveFree: false);
                 } else {
                     $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
                 }
@@ -384,7 +423,7 @@ class ConversationPipeline
 
             // A reply that cannot go out spends nothing and moves nothing.
             if ($violation !== null) {
-                $this->releaseFunnelReply($reservation);
+                $this->releaseFunnelReply($reservation, $wamid);
                 $unavailable = filled($store->topic_unavailable_message);
                 $this->deliverTurn($store, $from, $messageBody, $unavailable ? trim($store->topic_unavailable_message) : $this->commerce->funnelOffer($product, $step->definition->offerCta), $domain->key());
                 $this->afterFunnelOffer(! $unavailable, $conversation, $product);
@@ -397,7 +436,7 @@ class ConversationPipeline
 
             // A purchase answers with the Core's own text, and is no free reply.
             if ($outcome->action === FunnelDefinition::ACTION_START_PAYMENT) {
-                $this->releaseFunnelReply($reservation);
+                $this->releaseFunnelReply($reservation, $wamid);
                 $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
                 $this->forgetSample($store, $wamid);
 
@@ -406,11 +445,16 @@ class ConversationPipeline
 
             $parts = [$reply->reply, ...$knowledge['verbatim']];
 
-            // A guided funnel's last free reply always closes with the offer.
-            $showsOffer = $outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || ($step->definition->guided && $freeTurn?->isLast());
+            // A guided funnel's last free reply closes with the offer, or with
+            // how to ask for it when the plans were just shown.
+            $lastFree = $step->definition->guided && $freeTurn?->isLast();
+            $justShown = $lastFree && $this->commerce->offerRecentlyShown($product, $conversation);
+            $showsOffer = $outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || ($lastFree && ! $justShown);
 
             if ($showsOffer) {
                 $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, FunnelDefinition::ACTION_SHOW_OFFER, true);
+            } elseif ($justShown) {
+                $parts[] = $this->commerce->offerPointer();
             }
 
             if ($outcome->text !== null) {
@@ -418,12 +462,13 @@ class ConversationPipeline
             }
 
             $this->deliverTurn($store, $from, $messageBody, implode("\n\n", $parts), $domain->key());
+            $this->samples->settle($customer, $product, $wamid);
             $this->afterFunnelOffer($showsOffer || str_contains((string) $outcome->text, '{planes}'), $conversation, $product);
             $this->forgetSample($store, $wamid);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
         } catch (Throwable $e) {
             // Nothing was delivered: the free reply stays available and the state does not move.
-            $this->releaseFunnelReply($reservation);
+            $this->releaseFunnelReply($reservation, $wamid);
 
             throw $e;
         }
@@ -431,39 +476,72 @@ class ConversationPipeline
 
     /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
     /**
-     * A guided funnel without free replies left. While the conversation has
-     * reads left, one model call, without material or history, reads what the customer
-     * wants and words a commercial reply that the Core validates. Without reads,
-     * if the model fails or if its reply does not pass, the customer gets the
-     * Core's fixed reply, which says how to see the plans and pay.
+     * Every message of a guided funnel's stage, whether free replies are left
+     * or not. One model call, with the conversation's history and no
+     * material, follows the funnel's commercial process and reads the
+     * message (intent and question); the Core validates both.
      *
-     * The model also says whether the message asks about the product as a
-     * purchase (question 'comercial'): only then may the offer be shown, and
-     * only then the product's verbatim commercial resources answer it, exactly
-     * as written (CommercialAdvisor::literalAnswer()), within the same read.
-     * Any other message gets no plan list, only how to ask for it.
+     * - A purchase or the offer, validated (limitActionRejection()).
+     * - A request for content ('contenido') is the free reply, while the
+     *   customer has one: only then is a free reply spent (converse()).
+     *   Without one, the model's reply that says it is part of the full
+     *   service, if it passes the strict check, or the Core's fixed reply.
+     * - A commercial question (a purchase doubt or objection too): the
+     *   product's verbatim commercial resources, exactly as written, within
+     *   the same read (literalAnswer()); without any configured, or when it
+     *   needs no document, the model's reply in the funnel's strategy
+     *   (commercialWordingViolation()); when it needs one and none fits,
+     *   undocumented_reply.
+     * - Anything else: the model's reply only in the strict shape that gives
+     *   no content, or the Core's fixed reply.
+     *
+     * The reads (after_limit_reads) bound the commercial turns of the
+     * conversation; a turn that became a free reply gives its read back, as
+     * free replies have their own limit. Once they ran out, a customer with
+     * free replies left still gets a grace read per free reply left, and one
+     * after each reactivation sent, only so the message can be read: a grace
+     * read is no free reply (FunnelStates::takeRead()). Without any read the
+     * message is not read: it gets no free reply, only how to ask for the
+     * plans (and the fixed reply once the free replies are over).
+     *
+     * A commercial wording is checked against the approved facts before it
+     * goes out (CommercialAdvisor::checkClaims()), only observed and logged
+     * for now: it never changes the reply.
+     * Only a commercial question gets the
+     * plan list, at its configured frequency; any other message, only how to
+     * ask for it.
      */
-    private function readAfterFreeReplies(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access, ?string $wamid): void
+    private function commercialTurn(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access, ?string $wamid, bool $mayGiveFree = true): void
     {
         $outcome = null;
         $reply = null;
         $facts = [];
-        $canRead = $this->funnels->takeLimitRead($conversation, $product, $funnel, $step->stage->key, $wamid);
+        // Its own cache key: the free reply of this same message caches under the message's.
+        $turnKey = $wamid !== null ? "{$wamid}#turn" : null;
+        // A free reply this same message reserved before the worker died is still its own.
+        $held = $mayGiveFree && $this->samples->holds($customer, $product, $wamid);
+        $free = $mayGiveFree && ($access->sampleAvailable || $held);
+        $readKind = $this->funnels->takeLimitRead(
+            $conversation, $product, $funnel, $step->stage->key, $wamid,
+            $free ? $this->samples->remaining($customer, $product) + ($held ? 1 : 0) : 0,
+            $free ? $conversation->reactivation_episode_at?->format('Y-m-d H:i:s') : null,
+        );
+        $canRead = $readKind !== null;
 
         if ($canRead) {
             try {
                 $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
 
                 // A retry of the same message reuses the answer already generated.
-                $raw = $this->rememberedSample($store, $wamid);
+                $raw = $this->rememberedSample($store, $turnKey);
 
                 if ($raw === null) {
                     $raw = AIServiceFactory::make($store)->getResponse(
                         $messageBody,
-                        $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), freeRepliesOver: true),
-                        [], // never the history: it holds what the free replies already taught
+                        $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true),
+                        $this->history($store, $from, $domain->key()),
                     );
-                    $this->rememberSample($store, $wamid, $raw);
+                    $this->rememberSample($store, $turnKey, $raw);
                 }
 
                 $reply = StageReply::parse($raw, true, $step->definition->intents);
@@ -476,12 +554,13 @@ class ConversationPipeline
         $rejected = $outcome?->action !== null ? $this->limitActionRejection($outcome->action, $reply, $product, $conversation) : null;
         $action = $rejected === null ? $outcome?->action : null;
         $commercial = $reply?->question === StageReply::QUESTION_COMMERCIAL;
-        $read = ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply?->intent, 'confidence' => $reply?->confidence, 'question' => $reply?->question, 'action_rejected' => $rejected];
+        $content = $reply?->question === StageReply::QUESTION_CONTENT;
+        $read = ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply?->intent, 'confidence' => $reply?->confidence, 'question' => $reply?->question, 'action_rejected' => $rejected, 'free_available' => $free, 'read' => $readKind];
 
         if ($action === FunnelDefinition::ACTION_START_PAYMENT) {
             Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
             $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
-            $this->forgetSample($store, $wamid);
+            $this->forgetSample($store, $turnKey);
 
             return;
         }
@@ -490,14 +569,35 @@ class ConversationPipeline
             Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
             $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true), $domain->key());
             $this->afterFunnelOffer(true, $conversation, $product);
-            $this->forgetSample($store, $wamid);
+            $this->forgetSample($store, $turnKey);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
 
             return;
         }
 
+        // Only a request for content is the free reply, while the customer has one. A message the
+        // model did not read (no reads left, or it failed) never gets one by default.
+        if ($free && $content) {
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => null, 'free_reply' => true]);
+            $this->funnels->releaseLimitRead($conversation, $product, $wamid, $readKind);
+
+            $this->converse($store, $conversation, $from, $messageBody, $query, $customer, $product, $domain, $funnel, FunnelStep::converse($step->definition, $step->stage, $step->interactions, true), $access, $wamid);
+            $this->forgetSample($store, $turnKey);
+
+            return;
+        }
+
         $literal = $outcome !== null && $commercial ? $this->advisor->literalAnswer($store, $domain, $product, $messageBody, $facts) : null;
-        $violation = $reply?->reply !== null ? $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases) : 'empty';
+
+        // A commercial question follows the funnel's strategy in the model's words when no verbatim
+        // resource had to answer it: none configured, or one that needs no document (an objection).
+        // A failed selection leaves it unknown. Anything else goes out only in the strict shape.
+        $freeWording = $commercial && in_array($literal['reason'] ?? null, ['no_resources', 'no_instructions', 'not_needed'], true);
+        $violation = match (true) {
+            $reply?->reply === null => 'empty',
+            $freeWording => $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases),
+            default => $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases),
+        };
 
         if ($outcome !== null) {
             Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literal['reason'] ?? null]);
@@ -508,17 +608,51 @@ class ConversationPipeline
         // A commercial question gets the offer at its configured frequency; any other message, only how to ask for it.
         $offer = fn () => $commercial ? $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation) : $this->commerce->offerPointer();
 
+        $literalReason = $literal['reason'] ?? null;
+        $sendsWording = ! in_array($literalReason, ['answered', 'no_match'], true) && $outcome !== null && $violation === null;
+
         $text = match (true) {
-            ($literal['reason'] ?? null) === 'answered' => $literal['text']."\n\n".$offer(),
-            ($literal['reason'] ?? null) === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
+            $literalReason === 'answered' => $literal['text']."\n\n".$offer(),
+            $literalReason === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
             // The model already invited: something about the plans joins only if they were not just shown.
-            $outcome !== null && $violation === null => $this->commerce->offerRecentlyShown($product, $conversation) ? $reply->reply : $reply->reply."\n\n".$offer(),
+            $sendsWording => $this->commerce->offerRecentlyShown($product, $conversation) ? $reply->reply : $reply->reply."\n\n".$offer(),
+            // The fixed reply says the free replies are over only when they are.
+            $free => $offer(),
             default => trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$offer(),
         };
 
+        // Observed only, and before the send: nothing after it may fail the job, or its retry would send the reply again.
+        if ($freeWording && $sendsWording) {
+            $this->observeClaims($store, $domain, $product, $step, $reply->reply, $wamid);
+        }
+
         $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
         $this->commerce->recordOfferIfSent($conversation, $product, $text);
-        $this->forgetSample($store, $wamid);
+        $this->forgetSample($store, $turnKey);
+    }
+
+    /**
+     * Logs how many facts a commercial wording states without support in the
+     * approved ones: counts only, never the words of the reply. Observation
+     * only: nothing it finds blocks or changes the reply, and any failure
+     * only leaves it unchecked.
+     */
+    private function observeClaims(Store $store, DomainModule $domain, Product $product, FunnelStep $step, string $reply, ?string $wamid): void
+    {
+        try {
+            // Once per message: a retry goes straight to the send, without checking again.
+            if ($wamid !== null && ! Cache::add('claims-checked:'.$store->id.':'.hash('sha256', $wamid), true, now()->addMinutes(self::SAMPLE_CACHE_MINUTES + 5))) {
+                return;
+            }
+
+            $check = $this->advisor->checkClaims($store, $domain, $product, $step->stage->instructions, $this->commerce->plansBlock($product), $reply);
+
+            if ($check !== null) {
+                Log::info('FUNNEL_CLAIMS_CHECK', ['store_id' => $store->id, 'product_id' => $product->id, 'mode' => 'observe', 'verdict' => $check['verdict'], 'claims' => $check['claims'], 'unsupported' => $check['unsupported']]);
+            }
+        } catch (Throwable $e) {
+            Log::warning('FUNNEL_CLAIMS_CHECK_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
     }
 
     /**
@@ -539,10 +673,10 @@ class ConversationPipeline
         };
     }
 
-    private function releaseFunnelReply(?SampleDelivery &$reservation): void
+    private function releaseFunnelReply(?SampleDelivery &$reservation, ?string $inboundWamid = null): void
     {
         if ($reservation !== null) {
-            $this->samples->release($reservation);
+            $this->samples->release($reservation, $inboundWamid);
             $reservation = null;
         }
     }
@@ -630,7 +764,7 @@ class ConversationPipeline
     private function deliverTurn(Store $store, string $from, string $messageBody, string $text, ?string $domainKey): void
     {
         $text = $this->withWelcome($text);
-        $sentWamid = WhatsAppService::sendMessage($from, $text, $store);
+        $sentWamid = $this->send($store, $from, $text);
 
         if ($sentWamid === null) {
             throw new RuntimeException("The funnel's reply for store [{$store->id}] could not be sent.");
@@ -657,7 +791,7 @@ class ConversationPipeline
     private function deliverSample(Store $store, string $from, string $messageBody, string $answer, ?string $domainKey, SampleDelivery $reservation, ?string $inboundWamid): void
     {
         $answer = $this->withWelcome($answer);
-        $sentWamid = WhatsAppService::sendMessage($from, $answer, $store);
+        $sentWamid = $this->send($store, $from, $answer);
 
         if ($sentWamid === null) {
             $this->samples->release($reservation);
@@ -1035,11 +1169,38 @@ class ConversationPipeline
             'content' => $answer,
         ]);
 
-        $wamid = WhatsAppService::sendMessage($from, $answer, $store);
+        $wamid = $this->send($store, $from, $answer);
 
         if ($wamid) {
             WhatsAppStatusTracker::trackMessage($assistantMessage->id, $wamid);
         }
+    }
+
+    /**
+     * Sends a turn: with a reply button per plan when it carries the plan
+     * list of the conversation's product (CommerceResponder::planButtons()),
+     * otherwise as text. It falls back to text only when Meta refused the
+     * buttons; when the outcome is unknown nothing else is sent, so the
+     * customer never gets both, and the caller handles it as a failed send.
+     */
+    private function send(Store $store, string $from, string $text): ?string
+    {
+        $product = $this->conversation?->current_product_id ? Product::where('store_id', $store->id)->find($this->conversation->current_product_id) : null;
+        $buttons = $this->commerce->planButtons($product, $this->customer, $text);
+
+        if ($buttons === null) {
+            return WhatsAppService::sendMessage($from, $text, $store);
+        }
+
+        $sent = WhatsAppService::sendInteractiveButtons($from, $text, $buttons, $store);
+
+        if ($sent === false) {
+            Log::warning('PLAN_BUTTONS_REFUSED', ['store_id' => $store->id, 'product_id' => $product->id]);
+
+            return WhatsAppService::sendMessage($from, $text, $store);
+        }
+
+        return $sent;
     }
 
     /**

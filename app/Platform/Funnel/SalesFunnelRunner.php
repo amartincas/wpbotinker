@@ -90,15 +90,18 @@ class SalesFunnelRunner
                 continue;
             }
 
+            // In a guided funnel every message is first a commercial turn, with
+            // or without free replies left: the Core gives a free reply only
+            // to a request for content (ConversationPipeline::commercialTurn()).
+            if ($current->usesFreeReplies && $definition->guided) {
+                $action = GuidedFunnel::commercialAction($message);
+
+                return $action !== null
+                    ? FunnelStep::action($definition, $action, $current->key, $interactions)
+                    : FunnelStep::read($definition, $current, $interactions);
+            }
+
             if ($current->usesFreeReplies && $exhausted) {
-                if ($definition->guided) {
-                    $action = GuidedFunnel::commercialAction($message);
-
-                    return $action !== null
-                        ? FunnelStep::action($definition, $action, $current->key, $interactions)
-                        : FunnelStep::read($definition, $current, $interactions);
-                }
-
                 $target = $definition->onFreeRepliesExhausted !== null ? $definition->stage($definition->onFreeRepliesExhausted) : null;
 
                 if ($target === null || isset($visited[$target->key])) {
@@ -157,18 +160,34 @@ class SalesFunnelRunner
     }
 
     /**
-     * Whether a guided funnel may still call the model for this message, once
-     * the free replies are over. Without certainty it may not: the customer
-     * gets the Core's reply instead, and no call goes unaccounted.
+     * Which read a guided funnel's commercial turn may take for this message
+     * (FunnelStates::takeRead()), or null: the after_limit_reads, then a grace
+     * read per free reply left ($freeLeft), then one per reactivation sent.
+     * Without certainty there is none: the customer gets the Core's reply
+     * instead, and no call goes unaccounted.
      */
-    public function takeLimitRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid): bool
+    public function takeLimitRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid, int $freeLeft = 0, ?string $reactivationEpisode = null): ?string
     {
         try {
-            return $this->states->takeLimitRead($conversation, $product, $funnel, $stage, $wamid, max(0, (int) config('botinker.sales_funnels.guided.after_limit_reads', 5)));
+            return $this->states->takeRead($conversation, $product, $funnel, $stage, $wamid, max(0, (int) config('botinker.sales_funnels.guided.after_limit_reads', 5)), max(0, $freeLeft), $reactivationEpisode);
         } catch (Throwable $e) {
             Log::error('FUNNEL_LIMIT_READ_NOT_TAKEN', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
 
-            return false;
+            return null;
+        }
+    }
+
+    /**
+     * A commercial turn that became a free reply gives its read back: the
+     * free replies are bounded by their own limit. A failure only leaves the
+     * read spent, which is the safe side.
+     */
+    public function releaseLimitRead(Conversation $conversation, Product $product, ?string $wamid, string $kind = FunnelStates::READ): void
+    {
+        try {
+            $this->states->releaseLimitRead($conversation, $product, $wamid, $kind);
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_LIMIT_READ_NOT_RELEASED', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
         }
     }
 

@@ -114,23 +114,34 @@ return [
                 'presentar_oferta' => 'Este es el momento de mostrarle los planes: el cliente los pide, o ya entendió cómo le ayuda el servicio y conviene presentárselos. '
                     .'El sistema los agrega después de tu respuesta, con sus precios. Si ya los vio en esta conversación y no los vuelve a pedir, no la elijas.',
             ],
-            'after_limit' => 'Las respuestas gratuitas de este cliente se agotaron: ya no resuelvas su consulta. '
-                .'En "reply", con tu tono habitual y en máximo tres frases cortas y :characters caracteres: empieza con un reconocimiento muy breve de lo que necesita (por ejemplo, «Entiendo» o «Te entiendo»), '
-                .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción. '
-                .'Después del reconocimiento, cada frase debe hablar del servicio (por esa palabra o por el nombre del producto), la suscripción o los planes, no del tema que pregunta. '
-                .'No des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista; no uses listas ni frases entre comillas; no inventes importes, beneficios ni condiciones. '
+            // Every message of a guided funnel is first a commercial turn: only the Core gives a free reply, to a request for content.
+            'commercial_turn' => 'Este es un turno comercial: sigue el PROCESO COMERCIAL con tu tono habitual y usa la conversación anterior para no repetir lo que ya dijiste ni lo que el cliente ya contó. '
+                .'En este mensaje no resuelvas peticiones del contenido del servicio (consejos, técnicas, ejemplos, ejercicios o ayuda con su situación concreta): el sistema decide si puede dárselas. '
+                .'Si el cliente pide eso, en "reply", en máximo tres frases cortas y :characters caracteres: empieza con un reconocimiento muy breve (por ejemplo, «Entiendo» o «Te entiendo»), '
+                .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción; '
+                .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas. '
+                .'No inventes importes, beneficios ni condiciones. '
                 .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null. '
-                .'Añade al JSON el campo "question": "comercial" si su último mensaje pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes) o decide comprar; '
+                .'Añade al JSON el campo "question": "comercial" si su último mensaje pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes), plantea una duda u objeción sobre comprarlo o decide comprar; '
                 .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); null si no está claro.',
             'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
 
-            // After the free replies, a commercial question that no verbatim commercial resource answers.
+            // Checks the facts a commercial turn's own wording states against the approved ones
+            // (CommercialAdvisor::checkClaims()). Only observed and logged for now: it never blocks.
+            'claims_check' => 'Eres un verificador. Recibes la respuesta que un asistente comercial dio a un cliente y los HECHOS APROBADOS del producto. '
+                .'Identifica en la respuesta solo las afirmaciones de hecho sobre el producto o el servicio: qué incluye, funciones, características, condiciones, resultados, garantías, reembolsos, duración o disponibilidad. '
+                .'No cuentes como hechos la empatía, las opiniones, las invitaciones, las preguntas ni los recursos persuasivos. '
+                .'Una afirmación está respaldada solo si los HECHOS APROBADOS la dicen o la implican claramente. '
+                .'La INSTRUCCIÓN COMERCIAL dice cómo vender: sus indicaciones (por ejemplo, qué destacar o cómo argumentar) no prueban que algo exista; solo cuentan como respaldo los hechos que afirma explícitamente sobre el producto. '
+                .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"claims": [{"text": "la afirmación", "supported": true o false}]}; usa una lista vacía si no hay afirmaciones de hecho.',
+
+            // A commercial question that no verbatim commercial resource answers.
             'undocumented_reply' => 'No tengo información confirmada sobre esa condición específica y prefiero no darte una respuesta incorrecta. Si quieres, puedes consultar los planes disponibles para conocer las condiciones del servicio.',
 
-            // Model calls after the free replies, per conversation and product.
+            // Model calls of the commercial turns, per conversation and product (see commercial_turn).
             'after_limit_reads' => 5,
 
-            // What the Core requires of the model's reply after the free replies. Generic, for every domain.
+            // What the Core requires of the commercial turn's reply to a request for content it may not answer. Generic, for every domain.
             'after_limit_rules' => [
                 'max_characters' => 400,
                 'max_sentences' => 4,
@@ -140,6 +151,11 @@ return [
                 'service_terms' => ['servicio'], // and the product's whole name or aliases, without listing them here
                 'acknowledgments' => ['entiendo', 'te entiendo', 'comprendo', 'te comprendo', 'buena pregunta', 'que buena pregunta', 'tiene sentido', 'es normal', 'es comun', 'es muy comun'],
                 'courtesies' => ['si quieres', 'si te interesa', 'si lo deseas', 'si gustas', 'cuando quieras', 'cuando lo decidas', 'sin presion', 'sin presiones', 'sin afan', 'con calma'],
+                // A guarantee or a refund stated as a fact: only the approved material may give it (commercialWordingViolation()).
+                'claim_terms' => [
+                    'garantia', 'garantias', 'garantizamos', 'garantizo', 'garantizado', 'garantizada', 'garantiza',
+                    'reembolso', 'reembolsamos', 'reembolsar', 'devolucion', 'devolvemos', 'te devuelvo', 'te devolvemos',
+                ],
                 'instruction_terms' => [
                     'aprenderas a', 'te enseno', 'te ensenare', 'sabras como',
                     'intenta', 'prueba', 'haz', 'usa', 'utiliza', 'practica', 'aplica', 'evita', 'observa', 'fijate', 'dile', 'preguntale', 'escribele',
@@ -149,7 +165,7 @@ return [
                 ],
             ],
 
-            // Whole messages the Core serves after the free replies, without the model, whatever reads are left.
+            // Whole messages the Core serves in a guided funnel, without the model, whatever reads are left.
             'purchase_phrases' => [
                 'Quiero mi acceso', 'Quiero acceso', 'Quiero el acceso', 'Quiero activar mi acceso', 'Activar mi acceso', 'Activa mi acceso',
                 'Quiero empezar', 'Quiero comenzar', 'Quiero empezar ya', 'Me animo', 'Lo quiero', 'Me apunto', 'Quiero contratar',

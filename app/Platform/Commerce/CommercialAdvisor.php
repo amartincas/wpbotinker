@@ -45,6 +45,9 @@ class CommercialAdvisor
     /** Verbatim resources in one literal answer, at most. */
     private const MAX_LITERAL_FRAGMENTS = 2;
 
+    /** Commercial resources the claims check reads, at most. */
+    private const MAX_CHECKED_RESOURCES = 40;
+
     public function __construct(
         private readonly KnowledgeRetriever $retriever,
         private readonly KnowledgePlanner $planner,
@@ -157,8 +160,9 @@ class CommercialAdvisor
      *
      * The reason tells why there is no text: 'no_instructions' and
      * 'no_resources' (nothing to consult, and no AI call), 'failed' (the
-     * selection failed: the material is unknown), 'no_match' (nothing
-     * configured answers this message); 'answered' with the text.
+     * selection failed: the material is unknown), 'not_needed' (the message
+     * needs no documented answer, like an objection), 'no_match' (it needs
+     * one and nothing configured gives it); 'answered' with the text.
      *
      * @param  array<string, mixed>  $facts  fact key => value the domain may read
      * @return array{text: string|null, reason: string}
@@ -185,6 +189,11 @@ class CommercialAdvisor
             return ['text' => null, 'reason' => 'failed'];
         }
 
+        // An objection or an argument needs no document: the funnel's strategy answers it.
+        if ($plan->status === 'not_needed') {
+            return ['text' => null, 'reason' => 'not_needed'];
+        }
+
         $parts = $plan->fragments
             ->reject(fn (KnowledgeChunk $chunk) => $this->claims->amount($chunk->content) !== null)
             ->take(self::MAX_LITERAL_FRAGMENTS)
@@ -195,6 +204,46 @@ class CommercialAdvisor
         return $parts->isEmpty()
             ? ['text' => null, 'reason' => 'no_match']
             : ['text' => $parts->implode("\n\n"), 'reason' => 'answered'];
+    }
+
+    /**
+     * Which facts a commercial turn's own wording states without support in
+     * the approved ones: the product's description and FAQ, its plans, its
+     * commercial resources (to be worded or verbatim) and what the funnel's
+     * instruction states as fact. One model call, which tells facts from
+     * empathy, opinion or persuasion. Null when it could not be checked.
+     *
+     * @return array{verdict: string, claims: int, unsupported: int}|null verdict: 'no_claims', 'supported' or 'unsupported'; the counts of claims and of unsupported ones
+     */
+    public function checkClaims(Store $store, DomainModule $domain, Product $product, string $instructions, string $plans, string $reply): ?array
+    {
+        try {
+            $keys = $this->retriever->headings($store, $domain->key(), $product, purpose: KnowledgeSource::PURPOSE_COMMERCIAL);
+            $resources = $this->retriever->retrieveByKeys($store, $domain->key(), $product, $keys, self::MAX_CHECKED_RESOURCES, KnowledgeSource::PURPOSE_COMMERCIAL);
+            $raw = trim(AIServiceFactory::make($store)->getResponse($reply, $this->prompts->buildClaimsCheck($product, $instructions, $plans, $resources), []));
+        } catch (Throwable $e) {
+            Log::warning('FUNNEL_CLAIMS_CHECK_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+
+            return null;
+        }
+
+        $decoded = json_decode(trim((string) preg_replace(['/^```(?:json)?/i', '/```$/'], '', $raw)), true);
+
+        if (! is_array($decoded) || ! is_array($decoded['claims'] ?? null)) {
+            Log::warning('FUNNEL_CLAIMS_CHECK_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => 'invalid_answer']);
+
+            return null;
+        }
+
+        // Only counts leave this method: the claims are words of the reply, which stays out of the logs.
+        $claims = array_values(array_filter($decoded['claims'], fn ($claim) => is_array($claim) && is_string($claim['text'] ?? null)));
+        $unsupported = count(array_filter($claims, fn (array $claim) => ($claim['supported'] ?? null) !== true));
+
+        return [
+            'verdict' => $claims === [] ? 'no_claims' : ($unsupported === 0 ? 'supported' : 'unsupported'),
+            'claims' => count($claims),
+            'unsupported' => $unsupported,
+        ];
     }
 
     /**

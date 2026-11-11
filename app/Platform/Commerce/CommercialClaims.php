@@ -137,6 +137,58 @@ final class CommercialClaims
     }
 
     /**
+     * Why a commercial turn's own wording (the funnel's strategy, when no
+     * verbatim resource answers) cannot go out, or null. Besides
+     * funnelViolation(): no content of the service (a list, a quoted
+     * example, or an instruction that is not about the plans or the service:
+     * "prueba el plan semanal" is selling, "prueba mirarla a los ojos" is
+     * the service) and no guarantee or refund stated as a fact, which only
+     * the approved material may give. Like the rest of this class, it
+     * reduces what a model could give away or make up; it cannot prove there
+     * is none.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function commercialWordingViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        if ($reason = $this->funnelViolation($text, $productName)) {
+            return $reason;
+        }
+
+        $rules = (array) config('botinker.sales_funnels.guided.after_limit_rules', []);
+        $names = $this->namePatterns([$productName, ...$aliases]);
+        $plain = preg_replace($names, self::PRODUCT_REFERENCE, Str::ascii(mb_strtolower($text)));
+        $service = [...(array) ($rules['commercial_terms'] ?? []), ...(array) ($rules['service_terms'] ?? []), self::PRODUCT_REFERENCE];
+        $sentences = array_values(array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $plain)), fn (string $sentence) => $sentence !== ''));
+
+        // Denied right before it ("no es una garantía", "no te garantizo", "sin reembolso") is no claim;
+        // "si no te funciona te devolvemos" is: the "no" there denies something else.
+        $denial = '\b(?:no|sin|ningun|ninguna|nunca)\s+(?:(?:es|son|hay|tiene|tienes|incluye|ofrece|ofrecemos|damos|existe|te|le|lo|la|el|un|una|de)\s+){0,2}';
+
+        foreach ((array) ($rules['claim_terms'] ?? []) as $term) {
+            $term = preg_quote((string) $term, '/');
+
+            if (preg_match_all("/\\b{$term}\\b/", $plain) > preg_match_all("/{$denial}{$term}\\b/", $plain)) {
+                return 'unbacked_claim';
+            }
+        }
+
+        foreach ($sentences as $sentence) {
+            foreach (preg_split('/,|\s+(?:y|pero)\s+/u', $sentence) as $clause) {
+                if ($this->mentions($clause, (array) ($rules['instruction_terms'] ?? [])) && ! $this->mentions($clause, $service)) {
+                    return 'instruction';
+                }
+            }
+        }
+
+        return match (true) {
+            preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
+            $this->quotesAnExample($text, $names) => 'quoted_example',
+            default => null,
+        };
+    }
+
+    /**
      * The whole names, longest first so an alias containing the name wins,
      * as patterns over lowercase text without accents.
      *

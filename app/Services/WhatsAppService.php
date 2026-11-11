@@ -80,6 +80,60 @@ class WhatsAppService
     }
 
     /**
+     * Send a text with up to three reply buttons (interactive "button"
+     * message). Each button's id comes back in the webhook as
+     * interactive.button_reply.id when the customer taps it.
+     *
+     * Three outcomes, so the caller only falls back to plain text when the
+     * buttons certainly did not go out:
+     * - the WAMID: Meta accepted the message;
+     * - false: Meta answered and refused it (4xx), so nothing was sent;
+     * - null: unknown (no answer, timeout, 5xx, or no WAMID): it may have
+     *   gone out, and sending it again as text could duplicate it.
+     *
+     * @param  list<array{id: string, title: string}>  $buttons
+     */
+    public static function sendInteractiveButtons(string $to, string $body, array $buttons, Store $store): string|false|null
+    {
+        try {
+            $response = Http::withToken($store->wa_access_token)
+                ->post("https://graph.facebook.com/v20.0/{$store->wa_phone_number_id}/messages", [
+                    'messaging_product' => 'whatsapp',
+                    'recipient_type' => 'individual',
+                    'to' => $to,
+                    'type' => 'interactive',
+                    'interactive' => [
+                        'type' => 'button',
+                        'body' => ['text' => $body],
+                        'action' => ['buttons' => array_map(fn (array $button) => ['type' => 'reply', 'reply' => ['id' => $button['id'], 'title' => $button['title']]], $buttons)],
+                    ],
+                ]);
+        } catch (\Throwable $e) {
+            Log::error('WHATSAPP_INTERACTIVE_UNKNOWN', ['store_id' => $store->id, 'error' => $e::class]);
+
+            return null;
+        }
+
+        if ($response->clientError()) {
+            Log::warning('WHATSAPP_INTERACTIVE_REFUSED', ['store_id' => $store->id, 'status' => $response->status(), 'error' => $response->json('error.code')]);
+
+            return false;
+        }
+
+        $wamid = $response->successful() ? data_get($response->json(), 'messages.0.id') : null;
+
+        if (! is_string($wamid) || $wamid === '') {
+            Log::error('WHATSAPP_INTERACTIVE_UNKNOWN', ['store_id' => $store->id, 'status' => $response->status()]);
+
+            return null;
+        }
+
+        Log::info('WhatsApp interactive message sent', ['store_id' => $store->id, 'wamid' => $wamid]);
+
+        return $wamid;
+    }
+
+    /**
      * Send a Meta-approved HSM Template Message via WhatsApp Business Cloud API.
      *
      * Builds the `template` payload with a `body` component whose positional

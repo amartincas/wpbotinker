@@ -199,6 +199,7 @@ class WhatsAppController extends Controller
 
     $body = null;
     $mediaId = null;
+    $choiceId = null;
 
     if ($type === 'text') {
         $body = $message['text']['body'] ?? null;
@@ -218,6 +219,13 @@ class WhatsAppController extends Controller
         // Payment receipts (C4). The sales flow keeps ignoring images.
         $mediaId = $message['image']['id'] ?? null;
         $body = $message['image']['caption'] ?? null;
+    } elseif ($type === 'interactive' && ($message['interactive']['type'] ?? null) === 'button_reply' && $store->usesKnowledgeMode()) {
+        // A reply button the pipeline sent (a plan of its plan list): the
+        // title is what the customer said, the id what they chose. The sales
+        // flow never sends buttons, so it keeps ignoring them.
+        $reply = $message['interactive']['button_reply'] ?? [];
+        $body = is_string($reply['title'] ?? null) ? $reply['title'] : null;
+        $choiceId = is_string($reply['id'] ?? null) && strlen($reply['id']) <= 256 ? $reply['id'] : null;
     }
 
     if (!$fromPhone || (!$body && !$mediaId)) {
@@ -272,7 +280,8 @@ class WhatsAppController extends Controller
         $type,
         $mediaId,
         $productContext,
-        $adProductCandidates
+        $adProductCandidates,
+        $choiceId
     );
 
     Log::info('WhatsApp message queued for processing', [

@@ -16,6 +16,7 @@ use App\Models\Lead;
 use App\Models\Payment;
 use App\Models\Plan;
 use App\Models\Product;
+use App\Models\SampleDelivery;
 use App\Models\Store;
 use App\Models\Subscription;
 use App\Models\Topic;
@@ -235,7 +236,30 @@ describe('who is a prospect', function () {
         'atención humana' => [fn () => Lead::create(['store_id' => test()->store->id, 'customer_phone' => RX_PHONE, 'customer_name' => 'Cliente', 'summary' => 'Control', 'bot_active' => false]), 'human'],
         'pregunta pendiente' => [fn ($customer, Conversation $conversation) => $conversation->update(['pending_state' => ['type' => 'plan_choice']]), 'pending_state'],
         'sin respuesta del bot' => [fn () => WhatsAppMessage::create(['store_id' => test()->store->id, 'customer_phone' => RX_PHONE, 'role' => 'user', 'content' => 'Sin responder']), 'not_answered'],
+        // The message may invite to a free question: never to who has none left.
+        'sin respuestas gratuitas' => [fn (Customer $customer) => SampleDelivery::create(['store_id' => test()->store->id, 'customer_id' => $customer->id, 'product_id' => test()->product->id, 'turns_used' => 3]), 'no_free_reply'],
     ]);
+
+    it('still reactivates who has free replies left, whatever they used', function () {
+        $job = rxSilentProspect();
+        SampleDelivery::create(['store_id' => $this->store->id, 'customer_id' => rxCustomer()->id, 'product_id' => $this->product->id, 'turns_used' => 2]);
+
+        rxRun($job);
+
+        expect(rxReactivations())->toBe(1);
+    });
+
+    it('lets who answers the reactivation go on in the normal flow', function () {
+        rxRun(rxSilentProspect());
+        $calls = $this->modelCalls;
+
+        rxSay('Cuéntame más');
+
+        expect(rxReactivations())->toBe(1)
+            ->and($this->modelCalls)->toBeGreaterThan($calls)
+            ->and(rxConversation()->reactivation_episode_at)->not->toBeNull()
+            ->and(rxJobs())->toHaveCount(2);
+    });
 
     it('leaves payments, subscriptions and leads untouched', function () {
         $job = rxSilentProspect();

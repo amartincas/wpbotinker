@@ -23,6 +23,13 @@ use Illuminate\Support\Sleep;
  */
 class FunnelStates
 {
+    /** The kinds of read a commercial turn may take (takeRead()). */
+    public const READ = 'read';
+
+    public const GRACE = 'grace';
+
+    public const REACTIVATION = 'reactivation';
+
     private const MAX_RETRIES = 3;
 
     /** MariaDB: a concurrent save or reset took the row the insert counted on. */
@@ -58,38 +65,105 @@ class FunnelStates
      */
     public function takeLimitRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid, int $max): bool
     {
-        return $this->withRetries($conversation, $product, function () use ($conversation, $product, $funnel, $stage, $wamid, $max) {
+        return $this->takeRead($conversation, $product, $funnel, $stage, $wamid, $max) !== null;
+    }
+
+    /**
+     * Takes a read for a commercial turn, under the row's lock, and says which:
+     *
+     * - READ: one of the $max reads of the conversation;
+     * - GRACE: once those ran out, a read to classify the message while free
+     *   replies are left, at most $grace of them (the free replies left) kept
+     *   apart; it lets the message be read, it is no free reply;
+     * - REACTIVATION: once both ran out, one read per reactivation sent
+     *   ($reactivationEpisode), so its invitation to ask can be kept;
+     * - null: none, the message is not read.
+     *
+     * A retry of the same inbound message keeps the read it took.
+     */
+    public function takeRead(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid, int $max, int $grace = 0, ?string $reactivationEpisode = null): ?string
+    {
+        return $this->withRetries($conversation, $product, function () use ($conversation, $product, $funnel, $stage, $wamid, $max, $grace, $reactivationEpisode) {
             $id = ConversationFunnelState::firstOrCreate(
                 ['conversation_id' => $conversation->id, 'product_id' => $product->id],
                 ['sales_funnel_id' => $funnel->id, 'stage' => $stage, 'stage_interactions' => 0],
             )->id;
 
-            return DB::transaction(function () use ($id, $wamid, $max) {
+            return DB::transaction(function () use ($id, $wamid, $max, $grace, $reactivationEpisode) {
                 $state = ConversationFunnelState::whereKey($id)->lockForUpdate()->first();
 
                 if ($state === null) {
-                    return false;
+                    return null;
                 }
 
                 $context = $state->context ?? [];
-                $wamids = $context['limit_read_wamids'] ?? [];
 
-                if ($wamid !== null && in_array($wamid, $wamids, true)) {
-                    return true;
+                foreach ([self::READ => 'limit_read_wamids', self::GRACE => 'grace_read_wamids', self::REACTIVATION => 'reactivation_read_wamids'] as $kind => $key) {
+                    if ($wamid !== null && in_array($wamid, $context[$key] ?? [], true)) {
+                        return $kind;
+                    }
                 }
 
-                $reads = (int) ($context['limit_reads'] ?? 0);
+                $kind = match (true) {
+                    (int) ($context['limit_reads'] ?? 0) < $max => self::READ,
+                    (int) ($context['grace_reads'] ?? 0) < $grace => self::GRACE,
+                    $reactivationEpisode !== null && ($context['reactivation_read_episode'] ?? null) !== $reactivationEpisode => self::REACTIVATION,
+                    default => null,
+                };
 
-                if ($reads >= $max) {
-                    return false;
+                if ($kind === null) {
+                    return null;
                 }
 
-                $context['limit_reads'] = $reads + 1;
-                $context['limit_read_wamids'] = $wamid !== null ? [...$wamids, $wamid] : $wamids;
+                [$counter, $key] = match ($kind) {
+                    self::READ => ['limit_reads', 'limit_read_wamids'],
+                    self::GRACE => ['grace_reads', 'grace_read_wamids'],
+                    self::REACTIVATION => [null, 'reactivation_read_wamids'],
+                };
+
+                if ($counter !== null) {
+                    $context[$counter] = (int) ($context[$counter] ?? 0) + 1;
+                } else {
+                    $context['reactivation_read_episode'] = $reactivationEpisode;
+                }
+
+                $context[$key] = $wamid !== null ? [...($context[$key] ?? []), $wamid] : ($context[$key] ?? []);
 
                 $state->update(['context' => $context]);
 
-                return true;
+                return $kind;
+            });
+        });
+    }
+
+    /**
+     * Gives back the read a message took, when its turn became a free reply:
+     * free replies have their own limit. The message's id goes too, so a
+     * retry takes and gives back its read again instead of keeping it. A
+     * reactivation's read is kept: it was granted for that reactivation, and
+     * its free reply kept the invitation.
+     */
+    public function releaseLimitRead(Conversation $conversation, Product $product, ?string $wamid, string $kind = self::READ): void
+    {
+        if ($kind === self::REACTIVATION) {
+            return;
+        }
+
+        [$counter, $key] = $kind === self::GRACE ? ['grace_reads', 'grace_read_wamids'] : ['limit_reads', 'limit_read_wamids'];
+
+        $this->withRetries($conversation, $product, function () use ($conversation, $product, $wamid, $counter, $key) {
+            DB::transaction(function () use ($conversation, $product, $wamid, $counter, $key) {
+                $state = ConversationFunnelState::where('conversation_id', $conversation->id)->where('product_id', $product->id)->lockForUpdate()->first();
+
+                if ($state === null) {
+                    return;
+                }
+
+                $context = $state->context ?? [];
+                $context[$counter] = max(0, (int) ($context[$counter] ?? 0) - 1);
+                $context[$key] = array_values(array_filter($context[$key] ?? [], fn ($id) => $id !== $wamid));
+
+                $state->update(['context' => $context]);
             });
         });
     }
