@@ -46,7 +46,7 @@ class BackfillMetaConversions extends Command
         $leads = Lead::whereNull('meta_capi_sent_at')
             ->where('store_id', $storeId)
             ->where('customer_name', '!=', 'Unknown')
-            ->with('store')
+            ->with(['store', 'payment'])
             ->get();
 
         $this->info("Leads pendientes de procesar: {$leads->count()}");
@@ -88,7 +88,7 @@ class BackfillMetaConversions extends Command
                     if ($salePrice !== null) {
                         MetaConversionsApiService::sendPurchaseEvent(
                             $lead->store, $lead->customer_phone, (float) $salePrice,
-                            $lead->store->meta_capi_currency, $ctwaClid, $lead->created_at
+                            $lead->payment?->currency ?? $lead->store->meta_capi_currency, $ctwaClid, $lead->created_at
                         );
                     }
                 }
@@ -111,7 +111,7 @@ class BackfillMetaConversions extends Command
                     if ($salePrice !== null) {
                         MetaConversionsApiService::sendOfflinePurchaseEvent(
                             $lead->store, $lead->customer_phone, (float) $salePrice,
-                            $lead->store->meta_capi_currency, $lead->created_at
+                            $lead->payment?->currency ?? $lead->store->meta_capi_currency, $lead->created_at
                         );
                     }
                 }

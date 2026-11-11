@@ -70,6 +70,14 @@ class Lead extends Model
     }
 
     /**
+     * Get the confirmed subscription payment this lead records, if any.
+     */
+    public function payment(): BelongsTo
+    {
+        return $this->belongsTo(Payment::class);
+    }
+
+    /**
      * Mark the lead as processed.
      */
     public function markAsProcessed(): void

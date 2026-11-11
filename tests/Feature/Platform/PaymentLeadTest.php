@@ -56,7 +56,8 @@ beforeEach(function () {
             ])]]]]),
             str_starts_with($url, 'https://graph.facebook.com/v20.0/media-') => Http::response(['url' => 'https://lookaside.fbsbx.com/'.basename($url)]),
             str_starts_with($url, 'https://lookaside.fbsbx.com/') => Http::response('IMAGE-'.basename($url), 200, ['Content-Type' => 'image/jpeg']),
-            str_ends_with($url, '/events') => Http::response(['events_received' => 1]),
+            // A test may set $this->meta to make Meta answer otherwise.
+            str_ends_with($url, '/events') => isset($this->meta) ? ($this->meta)($request) : Http::response(['events_received' => 1]),
             str_ends_with($url, '/messages') => Http::response(['messages' => [['id' => 'wamid.out.'.Str::random(8)]]]),
             default => Http::response([], 404),
         };
@@ -125,6 +126,59 @@ it('records one Lead when the payment is confirmed, and Meta receives it once', 
         ->and(plLeadAlerts())->toBe(0)
         ->and(Subscription::count())->toBe(1);
 });
+
+it('sends the Purchase with the payment amount and currency, the conversation click id and the store Meta settings', function () {
+    plAdmin($this->store, "Sí P-{$this->payment->id}");
+
+    $purchases = Http::recorded(fn (Request $r) => str_ends_with($r->url(), '/events') && $r->data()['data'][0]['event_name'] === 'Purchase');
+
+    expect($purchases)->toHaveCount(1);
+    [$request] = $purchases->first();
+    expect($request->url())->toBe('https://graph.facebook.com/v20.0/DATASET-1/events')
+        ->and($request->header('Authorization'))->toBe(['Bearer capi-token'])
+        ->and($request->data()['data'][0])->toMatchArray([
+            'action_source' => 'business_messaging',
+            'messaging_channel' => 'whatsapp',
+            'user_data' => ['whatsapp_business_account_id' => 'WABA-1', 'ctwa_clid' => 'CLID-1'],
+            'custom_data' => ['value' => 20000.0, 'currency' => 'COP'],
+        ]);
+});
+
+it('reports the payment in its own currency, not the store default', function () {
+    $plan = Plan::create(['product_id' => $this->product->id, 'name' => 'Mensual USD', 'price' => 9.5, 'currency' => 'USD']);
+    Conversation::create(['store_id' => $this->store->id, 'customer_phone' => '573007775555', 'last_session_at' => now(), 'ctwa_clid' => 'CLID-2']);
+    $payment = plUnderReview($this->store, app(CustomerMemory::class)->customerFor($this->store, '573007775555'), $plan, 'media-usd');
+
+    plAdmin($this->store, "Sí P-{$payment->id}");
+
+    $purchase = Http::recorded(fn (Request $r) => str_ends_with($r->url(), '/events') && $r->data()['data'][0]['event_name'] === 'Purchase')->first()[0];
+    expect($purchase->data()['data'][0]['custom_data'])->toBe(['value' => 9.5, 'currency' => 'USD'])
+        ->and($purchase->data()['data'][0]['user_data']['ctwa_clid'])->toBe('CLID-2');
+});
+
+it('sends nothing to Meta while the payment is pending or under review', function () {
+    Payment::start(app(CustomerMemory::class)->customerFor($this->store, '573007776666'), $this->plan, now()->addHours(48));
+
+    expect($this->payment->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+        ->and(Payment::where('status', Payment::STATUS_PENDING)->count())->toBe(1)
+        ->and(Lead::count())->toBe(0)
+        ->and(plEvents())->toBe([]);
+});
+
+it('keeps the confirmation and the subscription when Meta fails', function (Closure $meta) {
+    $this->meta = $meta;
+
+    plAdmin($this->store, "Sí P-{$this->payment->id}");
+
+    expect($this->payment->fresh()->status)->toBe(Payment::STATUS_CONFIRMED)
+        ->and(Subscription::sole()->isValidAt())->toBeTrue()
+        ->and(Lead::count())->toBe(1)
+        ->and(Http::recorded(fn (Request $r) => ($r->data()['to'] ?? null) === PL_CUSTOMER && str_contains($r->data()['text']['body'] ?? '', 'fue confirmado')))->toHaveCount(1)
+        ->and($this->logged)->not->toContain('PAYMENT_LEAD_NOT_RECORDED');
+})->with([
+    'Meta answers an error' => fn () => fn () => Http::response(['error' => ['message' => 'Service temporarily unavailable', 'code' => 2]], 503),
+    'Meta cannot be reached' => fn () => fn (Request $request) => (Http::failedConnection())($request),
+]);
 
 it('names the Lead with the phone when the customer gave no name', function () {
     plAdmin($this->store, "Sí P-{$this->payment->id}");

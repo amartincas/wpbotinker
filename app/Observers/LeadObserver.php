@@ -44,7 +44,9 @@ class LeadObserver
                 $lead->store,
                 $lead->customer_phone,
                 (float) $lead->sale_value,
-                $lead->store->meta_capi_currency,
+                // A confirmed payment carries its own currency (copied from
+                // its plan): its amount is never reported in another one.
+                $lead->payment?->currency ?? $lead->store->meta_capi_currency,
                 $lead->ctwa_clid,
                 $lead->created_at
             );
