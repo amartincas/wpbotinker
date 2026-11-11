@@ -10,6 +10,7 @@ use App\Platform\Commerce\FreeTurn;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStage;
+use App\Platform\Funnel\StageReply;
 use App\Platform\Memory\FactDefinition;
 use App\Platform\Memory\PersonFacts;
 use Illuminate\Support\Collection;
@@ -307,8 +308,10 @@ class PromptAssembler
         $prompt .= "\n\n".($definition->guided ? self::GUIDED_FUNNEL_RULES : self::FUNNEL_RULES)."\n\n".self::CORE_RULES;
 
         if ($stage->hasIntentRules()) {
+            // A commercial turn's reading of the message (StageReply::QUESTION_*) is part of the same JSON.
             $prompt .= "\n\n### FORMATO DE RESPUESTA\n"
-                .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}. ';
+                .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1'
+                .($commercialTurn ? ', "question": "'.StageReply::QUESTION_COMMERCIAL.'" o "'.StageReply::QUESTION_CONTENT.'" o null' : '').'}. ';
             $prompt .= $definition->guided
                 ? 'En "intent" propón qué debe hacer el sistema en este momento de la conversación; usa null para seguir conversando. El sistema valida tu propuesta y ejecuta la operación: tú no ejecutas nada.'
                 : 'En "intent" indica cuál de estas intenciones expresa el último mensaje del cliente; usa null si no expresa ninguna con claridad. '

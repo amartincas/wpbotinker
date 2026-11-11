@@ -959,6 +959,26 @@ describe('the question after the limit', function () {
         expect(gfLastTurnPrompt())->toContain('"question": "comercial"')->toContain('"contenido"');
     });
 
+    it('puts the question in the JSON the commercial turn answers with, and only there', function () {
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(gfLastTurnPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1, "question": "comercial" o "contenido" o null}')
+            ->toContain('En "question" clasifica siempre su último mensaje')
+            ->and(gfLastPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}')->not->toContain('"question"');
+    });
+
+    it('shows no plans for [Planes] in a request for content once the free reply was given', function () {
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+        $this->travel(25)->hours();
+        $this->turns = [gfJson('Entiendo. Eso se trabaja con el servicio completo. [Planes]', question: 'contenido')];
+
+        gfSay('¿Y en una discoteca?');
+
+        expect(gfLast())->not->toContain('$9.900')->not->toMatch(StageReply::PLANS_MARKER)->and(gfTurns())->toBe(1);
+    });
+
     it('shows the offer the model proposes for a commercial question, and only how to ask for it when it was just shown', function () {
         $this->travel(25)->hours();
         $this->turns = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial'), gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
@@ -1257,6 +1277,26 @@ describe('the commercial turn', function () {
         gfPublish(free: 1);
         $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
     });
+
+    it('follows the question the model read, and the safe side without one', function (string $turn, string $message, Closure $expect) {
+        $this->turns = [$turn];
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay($message);
+
+        $expect($this);
+    })->with([
+        'comercial' => [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial'), '¿Esto cómo funciona?',
+            fn ($test) => expect(gfLast())->toStartWith('Te acompaño por WhatsApp durante tu suscripción.')->and(gfTurns())->toBe(0)],
+        'contenido' => [gfJson('', question: 'contenido'), '¿Cómo le hablo a una chica en un bar?',
+            fn ($test) => expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1)],
+        'ausente' => [gfJson('Fíjate en su mirada y luego háblale.', GuidedFunnel::INTENT_OFFER, 0.9), 'Mmm, no sé',
+            fn ($test) => expect(gfLast())->toBe($test->pointer)->and(gfTurns())->toBe(0)],
+        'inválida' => ['{"reply": "Fíjate en su mirada y luego háblale.", "intent": "presentar_oferta", "confidence": 0.9, "question": "venta"}', 'Mmm, no sé',
+            fn ($test) => expect(gfLast())->toBe($test->pointer)->and(gfTurns())->toBe(0)],
+        '[Planes] y comercial' => [gfJson('Con el plan semanal empiezas hoy. [Planes]', question: 'comercial'), '¿Esto cómo funciona?',
+            fn ($test) => expect(gfLast())->toStartWith('Con el plan semanal empiezas hoy.')->toContain('$9.900')->not->toMatch(StageReply::PLANS_MARKER)->and(gfTurns())->toBe(0)],
+    ]);
 
     it('tells the model the official prices come from the catalog, never to say it cannot give them, and gives it no amount', function () {
         gfSay('¿Esto cómo funciona?');

@@ -122,8 +122,8 @@ return [
                 .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas. '
                 .'No inventes importes, beneficios ni condiciones. '
                 .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null. '
-                .'Añade al JSON el campo "question": "comercial" si su último mensaje pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes), plantea una duda u objeción sobre comprarlo o decide comprar; '
-                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); null si no está claro.',
+                .'En "question" clasifica siempre su último mensaje: "comercial" si pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes), plantea una duda u objeción sobre comprarlo o decide comprar; '
+                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); null solo si no se puede saber.',
             'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
 
             // Checks the facts a commercial turn's own wording states against the approved ones
