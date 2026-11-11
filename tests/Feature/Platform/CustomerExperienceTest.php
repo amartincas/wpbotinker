@@ -335,7 +335,7 @@ describe('free sample grounded in the topic guide', function () {
 
         cxJob($this->store, 'Quiero mi Lectura Astral');
 
-        expect(cxLastTo(CX_CUSTOMER))->toBe("Respuesta generada.\n\nCIERRE-CONFIGURADO: ¿quieres la lectura completa?\n\nPlanes de «Lectura Astral»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.");
+        expect(cxLastTo(CX_CUSTOMER))->toBe("Respuesta generada.\n\nCIERRE-CONFIGURADO: ¿quieres la lectura completa?\n\nPlanes de «Lectura Astral»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇");
     });
 
     it('puts the plans right after the reply when no closing is configured', function () {

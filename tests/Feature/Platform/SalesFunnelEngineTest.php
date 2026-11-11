@@ -934,7 +934,7 @@ describe('products without a funnel', function () {
         feJob($this->store, 'Hola');
 
         expect(fePrompt())->toContain("### MUESTRA GRATUITA\n")->toContain('INSTR-MUESTRA')->not->toContain('PROCESO COMERCIAL')
-            ->and(feLast())->toBe("RESPUESTA-DEL-MODELO\n\nPlanes de «Asesor»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.")
+            ->and(feLast())->toBe("RESPUESTA-DEL-MODELO\n\nPlanes de «Asesor»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇")
             ->and(feTurns($this->product))->toBe(1)
             ->and(ConversationFunnelState::count())->toBe(0);
     });

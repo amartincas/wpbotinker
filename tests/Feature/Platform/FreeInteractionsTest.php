@@ -111,7 +111,7 @@ describe('three free replies', function () {
         fiJob($this->store, 'Lo probé y funcionó');
         expect(fiText())->toStartWith('CONSEJO-UTIL')
             ->and(substr_count(fiText(), '1. Mensual: $20.000 COP por 30 días'))->toBe(1)
-            ->and(fiText())->toEndWith('Escribe «pagar» para suscribirte.')
+            ->and(fiText())->toEndWith('Selecciona el plan que prefieras usando uno de los botones de abajo. 👇')
             ->and(fiPrompt())->toContain('Respuesta gratuita 3 de 3')->toContain(config('botinker.free_interactions.strategy.last'))
             ->and(fiTurns($this->product))->toBe(3);
 
@@ -133,7 +133,7 @@ describe('three free replies', function () {
             fiJob($this->store, $message);
         }
 
-        expect(fiText())->toBe("CONSEJO\n\nBENEFICIOS-REALES del servicio completo.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.");
+        expect(fiText())->toBe("CONSEJO\n\nBENEFICIOS-REALES del servicio completo.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇");
     });
 
     it('lets the product adapt the free replies, never their number', function () {

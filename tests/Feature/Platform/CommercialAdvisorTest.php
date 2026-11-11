@@ -181,7 +181,7 @@ function caOffer(string $product): string
 /** The plans that follow a commercial reply: no "you need a subscription" line. */
 function caPlans(string $product): string
 {
-    return "Planes de «{$product}»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.";
+    return "Planes de «{$product}»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇";
 }
 
 describe('commercial reply for a customer without access', function () {

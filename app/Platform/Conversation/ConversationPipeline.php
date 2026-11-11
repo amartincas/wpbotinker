@@ -361,7 +361,7 @@ class ConversationPipeline
                 $this->welcome = null;
                 $reservation = $step->useFreeReply && $access->sampleAvailable ? $this->samples->reserve($customer, $product) : null;
                 $this->deliverTurn($store, $from, $messageBody, $this->fillPlaceholders($step->text, $product), $domain->key());
-                $this->afterFunnelOffer(str_contains($step->text, '{planes}'), $conversation, $product);
+                $this->afterFunnelOffer($this->carriesPlans($step->text), $conversation, $product);
                 $this->funnels->advance($conversation, $product, $funnel, $step->nextStage, 0);
             } catch (Throwable $e) {
                 // Nothing was delivered: the free reply stays available and the state does not move.
@@ -445,11 +445,13 @@ class ConversationPipeline
 
             $parts = [$reply->reply, ...$knowledge['verbatim']];
 
-            // A guided funnel's last free reply closes with the offer, or with
-            // how to ask for it when the plans were just shown.
+            // A guided funnel's last free reply closes with the offer, and so does
+            // the model's own proposal: with how to ask for it when the plans were
+            // just shown. A funnel made of stages shows what its rules say.
             $lastFree = $step->definition->guided && $freeTurn?->isLast();
-            $justShown = $lastFree && $this->commerce->offerRecentlyShown($product, $conversation);
-            $showsOffer = $outcome->action === FunnelDefinition::ACTION_SHOW_OFFER || ($lastFree && ! $justShown);
+            $proposed = $outcome->action === FunnelDefinition::ACTION_SHOW_OFFER;
+            $justShown = $step->definition->guided && ($lastFree || $proposed) && $this->commerce->offerRecentlyShown($product, $conversation);
+            $showsOffer = ($proposed || $lastFree) && ! $justShown;
 
             if ($showsOffer) {
                 $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, FunnelDefinition::ACTION_SHOW_OFFER, true);
@@ -463,7 +465,7 @@ class ConversationPipeline
 
             $this->deliverTurn($store, $from, $messageBody, implode("\n\n", $parts), $domain->key());
             $this->samples->settle($customer, $product, $wamid);
-            $this->afterFunnelOffer($showsOffer || str_contains((string) $outcome->text, '{planes}'), $conversation, $product);
+            $this->afterFunnelOffer($showsOffer || $this->carriesPlans((string) $outcome->text), $conversation, $product);
             $this->forgetSample($store, $wamid);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
         } catch (Throwable $e) {
@@ -566,9 +568,21 @@ class ConversationPipeline
         }
 
         if ($action === FunnelDefinition::ACTION_SHOW_OFFER) {
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
-            $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true), $domain->key());
-            $this->afterFunnelOffer(true, $conversation, $product);
+            // The model's argument goes first, only if it passes like any commercial wording; then the
+            // Core's official plans, or how to ask for them when they were just shown.
+            $argumentViolation = $reply->reply !== null ? $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases) : 'empty';
+            $argument = $argumentViolation === null ? $reply->reply : null;
+            $repeated = $this->commerce->offerRecentlyShown($product, $conversation);
+            $offer = $repeated ? $this->commerce->offerPointer() : $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true);
+
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => $argumentViolation, 'offer_repeated' => $repeated]);
+
+            if ($argument !== null) {
+                $this->observeClaims($store, $domain, $product, $step, $argument, $wamid);
+            }
+
+            $this->deliverTurn($store, $from, $messageBody, $argument !== null ? $argument."\n\n".$offer : $offer, $domain->key());
+            $this->afterFunnelOffer(! $repeated, $conversation, $product);
             $this->forgetSample($store, $turnKey);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
 
@@ -753,7 +767,16 @@ class ConversationPipeline
     /** A configured text with the data only the Core has: the plans always come from the catalog. */
     private function fillPlaceholders(string $text, Product $product): string
     {
+        // [Planes] asks for them as {planes} does.
+        $text = (string) preg_replace(StageReply::PLANS_MARKER, '{planes}', $text);
+
         return strtr($text, ['{producto}' => $product->name, '{planes}' => str_contains($text, '{planes}') ? $this->commerce->plansBlock($product) : '']);
+    }
+
+    /** Whether a configured text asks for the catalog's plans ({planes} or [Planes]). */
+    private function carriesPlans(string $text): bool
+    {
+        return str_contains($text, '{planes}') || preg_match(StageReply::PLANS_MARKER, $text) === 1;
     }
 
     /**
@@ -764,14 +787,14 @@ class ConversationPipeline
     private function deliverTurn(Store $store, string $from, string $messageBody, string $text, ?string $domainKey): void
     {
         $text = $this->withWelcome($text);
-        $sentWamid = $this->send($store, $from, $text);
+        $sentWamid = $this->send($store, $from, $text, $sentText);
 
         if ($sentWamid === null) {
             throw new RuntimeException("The funnel's reply for store [{$store->id}] could not be sent.");
         }
 
         try {
-            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $text, $sentWamid);
+            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $sentText, $sentWamid);
         } catch (Throwable $e) {
             Log::error('TURN_HISTORY_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
         }
@@ -791,7 +814,7 @@ class ConversationPipeline
     private function deliverSample(Store $store, string $from, string $messageBody, string $answer, ?string $domainKey, SampleDelivery $reservation, ?string $inboundWamid): void
     {
         $answer = $this->withWelcome($answer);
-        $sentWamid = $this->send($store, $from, $answer);
+        $sentWamid = $this->send($store, $from, $answer, $sentText);
 
         if ($sentWamid === null) {
             $this->samples->release($reservation);
@@ -801,7 +824,7 @@ class ConversationPipeline
 
         try {
             $this->forgetSample($store, $inboundWamid);
-            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $answer, $sentWamid);
+            WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $sentText, $sentWamid);
         } catch (Throwable $e) {
             Log::error('SAMPLE_HISTORY_NOT_SAVED', [
                 'store_id' => $store->id,
@@ -1169,7 +1192,16 @@ class ConversationPipeline
             'content' => $answer,
         ]);
 
-        $wamid = $this->send($store, $from, $answer);
+        $wamid = $this->send($store, $from, $answer, $sentText);
+
+        // The history holds what the customer read. Already sent: nothing here may fail the job.
+        if ($sentText !== $answer) {
+            try {
+                $assistantMessage->update(['content' => $sentText]);
+            } catch (Throwable $e) {
+                Log::error('TURN_HISTORY_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
+            }
+        }
 
         if ($wamid) {
             WhatsAppStatusTracker::trackMessage($assistantMessage->id, $wamid);
@@ -1183,22 +1215,31 @@ class ConversationPipeline
      * buttons; when the outcome is unknown nothing else is sent, so the
      * customer never gets both, and the caller handles it as a failed send.
      */
-    private function send(Store $store, string $from, string $text): ?string
+    /**
+     * @param  string|null  $sentText  set to the text that went out (with its buttons, the buttons'
+     *                                 instruction), so the history holds what the customer read
+     */
+    private function send(Store $store, string $from, string $text, ?string &$sentText = null): ?string
     {
+        $sentText = $text;
         $product = $this->conversation?->current_product_id ? Product::where('store_id', $store->id)->find($this->conversation->current_product_id) : null;
         $buttons = $this->commerce->planButtons($product, $this->customer, $text);
+        // With its buttons the list says to use them; the text alone keeps its own way to choose.
+        $body = $buttons !== null ? $this->commerce->withButtonsInstruction($text) : $text;
 
-        if ($buttons === null) {
+        if ($buttons === null || mb_strlen($body) > 1024) {
             return WhatsAppService::sendMessage($from, $text, $store);
         }
 
-        $sent = WhatsAppService::sendInteractiveButtons($from, $text, $buttons, $store);
+        $sent = WhatsAppService::sendInteractiveButtons($from, $body, $buttons, $store);
 
         if ($sent === false) {
             Log::warning('PLAN_BUTTONS_REFUSED', ['store_id' => $store->id, 'product_id' => $product->id]);
 
             return WhatsAppService::sendMessage($from, $text, $store);
         }
+
+        $sentText = $body;
 
         return $sent;
     }

@@ -27,13 +27,29 @@ final class StageReply
     ) {}
 
     /**
+     * The model's own way to ask for the plans, written in its reply: the
+     * Core takes it out of the text and reads it as presentar_oferta.
+     */
+    public const PLANS_MARKER = '/'.self::PLANS_TOKEN.'/iu';
+
+    private const PLANS_TOKEN = '\[\s*planes\s*\]';
+
+    /**
+     * The [Planes] marker never reaches the customer, whatever the answer's
+     * shape. In a reply with intents, it is the offer when the model proposed
+     * no other intent (a purchase stays a purchase); the Core validates it
+     * like any proposal.
+     *
      * @param  array<string, string>  $intents  the intents of the funnel
      */
     public static function parse(string $raw, bool $structured, array $intents): self
     {
         $raw = trim($raw);
+        $marked = preg_match(self::PLANS_MARKER, $raw) === 1;
 
         if (! $structured) {
+            $raw = self::unmarked($raw);
+
             return new self($raw !== '' ? $raw : null, null, 0.0);
         }
 
@@ -42,10 +58,15 @@ final class StageReply
 
         if (! is_array($decoded)) {
             // Plain text is a reply without an intent; broken JSON never reaches the customer.
-            return new self($raw !== '' && ! str_starts_with($text, '{') ? $raw : null, null, 0.0);
+            $plain = self::unmarked($raw);
+            $asksForPlans = $marked && $plain !== '' && ! str_starts_with($text, '{') && isset($intents[GuidedFunnel::INTENT_OFFER]);
+
+            return $asksForPlans
+                ? new self($plain, GuidedFunnel::INTENT_OFFER, 1.0)
+                : new self($plain !== '' && ! str_starts_with($text, '{') ? $plain : null, null, 0.0);
         }
 
-        $reply = is_string($decoded['reply'] ?? null) ? trim($decoded['reply']) : '';
+        $reply = is_string($decoded['reply'] ?? null) ? self::unmarked($decoded['reply']) : '';
         $intent = $decoded['intent'] ?? null;
         $known = is_string($intent) && isset($intents[$intent]);
         $confidence = is_numeric($decoded['confidence'] ?? null) ? max(0.0, min(1.0, (float) $decoded['confidence'])) : 0.0;
@@ -53,7 +74,17 @@ final class StageReply
         $question = is_string($decoded['question'] ?? null) ? mb_strtolower(trim($decoded['question'])) : null;
         $question = in_array($question, [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT], true) ? $question : null;
 
+        if (! $known && $marked && isset($intents[GuidedFunnel::INTENT_OFFER])) {
+            return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question);
+        }
+
         return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question);
+    }
+
+    /** The text without the marker, and without the blank space it leaves. */
+    private static function unmarked(string $text): string
+    {
+        return trim((string) preg_replace(['/[ \t]*'.self::PLANS_TOKEN.'[ \t]*/iu', "/\n{3,}/"], [' ', "\n\n"], $text));
     }
 
     public static function none(): self

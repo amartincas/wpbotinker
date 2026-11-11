@@ -120,7 +120,7 @@ describe('the sequence from the ad', function () {
         omJob($this->store, 'Gracias, lo voy a probar');
 
         expect(omTexts())->toHaveCount(3)
-            ->and(omLastText())->toBe("CONSEJO-DEL-MODELO\n\n".OM_CLOSING."\n\nPlanes de «Secretos de la Seducción»:\n1. Mes: \$29.900 COP por 30 días\n\nEscribe «pagar» para suscribirte.")
+            ->and(omLastText())->toBe("CONSEJO-DEL-MODELO\n\n".OM_CLOSING."\n\nPlanes de «Secretos de la Seducción»:\n1. Mes: \$29.900 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇")
             ->and(omLastPrompt())->toContain('Respuesta gratuita 3 de 3')->toContain(config('botinker.free_interactions.strategy.last'))
             ->and(omTurns($this->coach))->toBe(3);
 

@@ -18,6 +18,7 @@ use App\Models\SampleDelivery;
 use App\Models\Store;
 use App\Models\Subscription;
 use App\Models\Topic;
+use App\Models\WhatsAppMessage;
 use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelVersions;
@@ -142,6 +143,75 @@ describe('the buttons that go out', function () {
             ->and(array_column($send['interactive']['action']['buttons'], 'type'))->toBe(['reply', 'reply'])
             ->and(pbButtons($send))->toBe([['plan:'.$this->weekly->id, 'Semanal'], ['plan:'.$this->monthly->id, 'Mensual']])
             ->and($this->modelCalls)->toBe(0);
+    });
+
+    it('tells to use the buttons, not to type, when the list goes with them', function (string $message, string $listed) {
+        pbSay($message);
+
+        $body = pbLast()['interactive']['body']['text'];
+
+        expect($body)->toContain($listed)
+            ->toEndWith('Selecciona el plan que prefieras usando uno de los botones de abajo. 👇')
+            ->not->toContain('Escribe «pagar»')->not->toContain('Responde con el número.')
+            ->and(pbButtons(pbLast()))->toHaveCount(2);
+    })->with([
+        'la oferta' => ['Planes', 'Planes de «Asesor»:'],
+        'la elección de plan' => ['¿Cómo pago?', '¿Qué plan de «Asesor» quieres?'],
+    ]);
+
+    it('keeps an administrator\'s own words next to the buttons', function () {
+        $this->product->update(['opening_message' => "Hola, mira nuestros planes:\n{planes}\n\nCuéntame cuál te interesa.", 'opening_triggers' => ['Quiero conocer el asesor']]);
+
+        pbSay('Quiero conocer el asesor');
+
+        expect(pbLast()['interactive']['body']['text'])->toEndWith('Cuéntame cuál te interesa.')->not->toContain(CommerceResponder::BUTTONS_INSTRUCTION)
+            ->and(pbButtons(pbLast()))->toHaveCount(2);
+    });
+
+    it('keeps in the history what the customer read, and gives the model that', function () {
+        pbSay('Planes');
+
+        $stored = WhatsAppMessage::where('role', 'assistant')->latest('id')->value('content');
+
+        expect($stored)->toBe(pbLast()['interactive']['body']['text'])->toEndWith(CommerceResponder::BUTTONS_INSTRUCTION)->not->toContain('Escribe «pagar»');
+
+        pbSay('¿Cómo funciona?');
+
+        $turn = Http::recorded(fn (Request $request) => str_contains($request->url(), 'api.openai.com') && str_contains($request->data()['messages'][0]['content'], 'Este es un turno comercial'))->last()[0]->data()['messages'];
+        $history = collect($turn)->where('role', 'assistant')->pluck('content')->implode("\n");
+
+        expect($history)->toContain(CommerceResponder::BUTTONS_INSTRUCTION)->not->toContain('Escribe «pagar» para suscribirte.');
+    });
+
+    it('keeps in the history the funnel\'s offer as it went out with its buttons', function () {
+        pbSay('¿Cómo le hablo a una chica en un bar?');
+
+        expect(pbLast()['type'])->toBe('interactive')
+            ->and(WhatsAppMessage::where('role', 'assistant')->latest('id')->value('content'))->toBe(pbLast()['interactive']['body']['text'])->toEndWith(CommerceResponder::BUTTONS_INSTRUCTION);
+    });
+
+    it('keeps in the history the text that went out when Meta refused the buttons', function () {
+        $this->interactive = 'refuse';
+
+        pbSay('Planes');
+
+        expect(WhatsAppMessage::where('role', 'assistant')->latest('id')->value('content'))->toBe(pbLast()['text']['body'])->toEndWith('Escribe «pagar» para suscribirte.');
+    });
+
+    it('keeps in the history an administrator\'s text as written, even with buttons', function () {
+        $this->product->update(['opening_message' => "Hola, mira nuestros planes:\n{planes}\n\nCuéntame cuál te interesa.", 'opening_triggers' => ['Quiero conocer el asesor']]);
+
+        pbSay('Quiero conocer el asesor');
+
+        expect(WhatsAppMessage::where('role', 'assistant')->latest('id')->value('content'))->toBe(pbLast()['interactive']['body']['text'])->toEndWith('Cuéntame cuál te interesa.');
+    });
+
+    it('keeps the way to choose as text when the list goes without buttons', function () {
+        collect(['A', 'B'])->each(fn ($name, $i) => Plan::create(['product_id' => $this->product->id, 'name' => "Plan {$name}", 'price' => 1000, 'duration_days' => 90 + $i, 'sort_order' => 5 + $i]));
+
+        pbSay('Planes');
+
+        expect(pbLast()['type'])->toBe('text')->and(pbLast()['text']['body'])->toEndWith('Escribe «pagar» para suscribirte.');
     });
 
     it('sends the text alone when the plans do not fit in buttons', function (Closure $change) {
@@ -280,17 +350,20 @@ describe('a tapped plan', function () {
 });
 
 describe('when WhatsApp does not take the buttons', function () {
-    it('sends the same text without buttons only when Meta refused them', function () {
+    it('sends the list as text only when Meta refused the buttons, with the way to choose it as text', function () {
         $this->interactive = 'refuse';
 
         pbSay('Planes');
 
         $sends = pbSends();
+        $withButtons = $sends[0]['interactive']['body']['text'];
+        $asText = $sends[1]['text']['body'];
 
         expect($sends)->toHaveCount(2)
             ->and($sends[0]['type'])->toBe('interactive')
             ->and($sends[1]['type'])->toBe('text')
-            ->and($sends[1]['text']['body'])->toBe($sends[0]['interactive']['body']['text']);
+            ->and($asText)->toEndWith('Escribe «pagar» para suscribirte.')->not->toContain(CommerceResponder::BUTTONS_INSTRUCTION)
+            ->and($asText)->toBe(str_replace(CommerceResponder::BUTTONS_INSTRUCTION, 'Escribe «pagar» para suscribirte.', $withButtons));
     });
 
     it('sends nothing more when the outcome is unknown, so the customer never gets it twice', function (string $mode) {

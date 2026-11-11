@@ -959,12 +959,17 @@ describe('the question after the limit', function () {
         expect(gfLastTurnPrompt())->toContain('"question": "comercial"')->toContain('"contenido"');
     });
 
-    it('shows the offer the model proposes for a commercial question', function () {
-        $this->turns = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
+    it('shows the offer the model proposes for a commercial question, and only how to ask for it when it was just shown', function () {
+        $this->travel(25)->hours();
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial'), gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
 
         gfSay('¿Qué opciones de pago tienen?');
 
         expect(gfLast())->toContain('$9.900')->toContain('$19.900');
+
+        gfSay('¿Y cuáles eran?');
+
+        expect(gfLast())->toBe('Escribe «planes» para ver los precios o «pagar» para suscribirte.');
     });
 
     it('never shows the offer unless the question was read as commercial, however old the offer', function (string $raw) {
@@ -1533,6 +1538,93 @@ describe('the commercial turn', function () {
     });
 });
 
+describe('the [Planes] marker', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+        $this->lastSendType = fn () => collect(Http::recorded(fn (Request $request) => str_ends_with($request->url(), '/messages')))->last()[0]->data()['type'];
+    });
+
+    it('puts the official plans, with their buttons, after the argument, and never shows the marker', function (string $raw, string $argument) {
+        $this->turns = [$raw];
+
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLast())->toStartWith($argument."\n\n")->toContain('$9.900')->toContain('$19.900')->not->toMatch(StageReply::PLANS_MARKER)
+            ->and(($this->lastSendType)())->toBe('interactive')
+            ->and(WhatsAppMessage::where('role', 'assistant')->latest('id')->value('content'))->toBe(gfLast())
+            ->and(Conversation::first()->offers_shown)->toHaveKey((string) $this->product->id)
+            ->and(gfTurns())->toBe(0);
+    })->with([
+        'al final' => [gfJson('Con el plan semanal empiezas hoy. [Planes]', question: 'comercial'), 'Con el plan semanal empiezas hoy.'],
+        'en minúsculas y en medio' => [gfJson('Mira esto [ planes ] y decide con calma.', question: 'comercial'), 'Mira esto y decide con calma.'],
+    ]);
+
+    it('lets a purchase win over the marker', function () {
+        $this->turns = [gfJson('Perfecto. [Planes]', GuidedFunnel::INTENT_BUY, 0.95, 'comercial')];
+
+        gfSay('Va, lo quiero');
+
+        expect(gfLast())->toContain('¿Qué plan de «Asesor» quieres?')->not->toMatch(StageReply::PLANS_MARKER)->not->toContain('Perfecto');
+    });
+
+    it('shows no plans for a marker in a message not read as commercial, and never the marker', function (string $raw) {
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+        $this->travel(25)->hours();
+        $this->turns = [$raw];
+
+        gfSay('¿Y en una discoteca?');
+
+        expect(gfLast())->not->toContain('$9.900')->not->toMatch(StageReply::PLANS_MARKER);
+    })->with([
+        'contenido' => [gfJson('Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes. [Planes]', question: 'contenido')],
+        'sin clasificar' => [gfJson('Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes. [Planes]')],
+        'texto libre, no JSON' => ['Entiendo. Eso se trabaja con el servicio completo. [planes]'],
+    ]);
+
+    it('sends the offer alone, safely, when the argument does not pass', function () {
+        $this->turns = [gfJson('Prueba mirarla a los ojos cuando le hables. [Planes]', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLast())->not->toContain('mirarla')->toContain('Planes de «Asesor»:')->toContain('$9.900')
+            ->and($this->verifierPrompts)->toBe([]);
+    });
+
+    it('checks the argument that went out, without the marker', function () {
+        $this->turns = [gfJson('Con el plan semanal empiezas hoy. [Planes]', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+
+        $checked = collect($this->chats)->first(fn (array $messages) => str_contains($messages[0]['content'], 'Eres un verificador'));
+
+        expect($this->verifierPrompts)->toHaveCount(1)->and($checked[1]['content'])->toBe('Con el plan semanal empiezas hoy.');
+    });
+
+    it('does not repeat the plans the model asks for right after they were shown, but the customer may always see them', function () {
+        $this->turns = [gfJson('Con el plan semanal empiezas hoy. [Planes]', question: 'comercial'), gfJson('Te los dejo aquí. [Planes]', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+        gfSay('¿Y cuáles eran?');
+
+        expect(gfLast())->toBe("Te los dejo aquí.\n\n".$this->pointer);
+
+        gfSay('Planes');
+
+        expect(gfLast())->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('reads [Planes] in a configured text as {planes}: the catalog, its buttons and the offer counted as shown', function () {
+        $this->product->update(['opening_message' => "Hola, soy tu asesor.\n\n[Planes]\n\nCuéntame qué buscas.", 'opening_triggers' => ['Quiero conocer el asesor']]);
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(gfLast())->toContain('1. Semanal: $9.900 COP por 7 días')->toEndWith('Cuéntame qué buscas.')->not->toMatch(StageReply::PLANS_MARKER)
+            ->and(($this->lastSendType)())->toBe('interactive')
+            ->and(Conversation::first()->offers_shown)->toHaveKey((string) $this->product->id);
+    });
+});
+
 describe('the claims check', function () {
     beforeEach(function () {
         gfPublish(free: 1);
@@ -1740,7 +1832,7 @@ describe('confirming before a payment', function () {
             gfSay('Quiero entrar');
 
             expect(Payment::count())->toBe(0)
-                ->and(gfLast())->toContain('1. Semanal: $9.900 COP por 7 días')->toContain('Responde con el número');
+                ->and(gfLast())->toContain('1. Semanal: $9.900 COP por 7 días')->toContain('Selecciona el plan que prefieras usando uno de los botones de abajo. 👇');
         });
 
         it('creates the payment once confirmed with its number', function () {
@@ -1769,7 +1861,7 @@ describe('confirming before a payment', function () {
 
             gfSay('Va, me quedo con esto');
 
-            expect(Payment::count())->toBe(0)->and(gfLast())->toContain('Responde con el número');
+            expect(Payment::count())->toBe(0)->and(gfLast())->toContain('Selecciona el plan que prefieras usando uno de los botones de abajo. 👇');
         });
 
         it('takes the plan named by the customer as their choice', function () {

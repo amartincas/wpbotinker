@@ -64,7 +64,7 @@ class PromptAssembler
         .'El cliente aún no tiene acceso al servicio.'
         ."\n- Lo indicado en PROCESO COMERCIAL prevalece sobre cualquier otra indicación comercial de la tienda, del dominio o del producto, pero no sobre estos límites ni sobre las reglas del sistema."
         ."\n- Tus afirmaciones sobre el producto deben estar en la información de arriba o en el material autorizado; si no están, dilo y no las inventes."
-        ."\n- Puedes nombrar los planes y comparar su duración. No escribas precios, importes, descuentos, medios ni condiciones de pago: los oficiales los muestra el sistema desde el catálogo. Si el cliente quiere conocerlos o el proceso comercial indica presentarlos, propón presentar_oferta; nunca digas que no puedes darlos."
+        ."\n- Puedes nombrar los planes y comparar su duración. No escribas precios, importes, descuentos, medios ni condiciones de pago: los oficiales los muestra el sistema desde el catálogo. Si el cliente quiere conocerlos o el proceso comercial indica presentarlos, propón presentar_oferta o escribe [Planes] al final de tu respuesta: el sistema añade los planes oficiales; nunca digas que no puedes darlos."
         ."\n- No afirmes que el cliente tiene acceso ni que su pago o su suscripción quedaron listos.";
 
     public function __construct(private readonly PersonFacts $personFacts) {}

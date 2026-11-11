@@ -43,6 +43,14 @@ class CommerceResponder
 
     private const MAX_BUTTON_BODY = 1024;
 
+    /** How to choose a plan from its list, as text: what a list without buttons says. */
+    private const PAY_INSTRUCTION = 'Escribe «pagar» para suscribirte.';
+
+    private const NUMBER_INSTRUCTION = 'Responde con el número.';
+
+    /** What a plan list with its buttons says instead. */
+    public const BUTTONS_INSTRUCTION = 'Selecciona el plan que prefieras usando uno de los botones de abajo. 👇';
+
     private const INTENT_STATUS = 'status';
 
     private const INTENT_PRICES = 'prices';
@@ -223,6 +231,17 @@ class CommerceResponder
         }
 
         return $plans->values()->map(fn (Plan $plan, int $i) => ['id' => self::PLAN_CHOICE.$plan->id, 'title' => $titles[$i]])->all();
+    }
+
+    /**
+     * A plan list's text for the message that carries its buttons: the Core's
+     * own way to choose it as text ("pagar", the plan's number) becomes the
+     * buttons'. What an administrator wrote (an opening, a funnel's call to
+     * action) stays as written. The text without buttons keeps its own.
+     */
+    public function withButtonsInstruction(string $text): string
+    {
+        return str_replace([self::PAY_INSTRUCTION, self::NUMBER_INSTRUCTION], self::BUTTONS_INSTRUCTION, $text);
     }
 
     /** The plan's payment, or the one already open for the product: never a second one. */
@@ -476,7 +495,7 @@ class CommerceResponder
             'plan_ids' => $plans->pluck('id')->all(),
         ]]);
 
-        return $this->reply($product, "¿Qué plan de «{$product->name}» quieres?\n".$this->planLines($plans)."\n\nResponde con el número.");
+        return $this->reply($product, "¿Qué plan de «{$product->name}» quieres?\n".$this->planLines($plans)."\n\n".self::NUMBER_INSTRUCTION);
     }
 
     private function startPayment(Store $store, Conversation $conversation, Customer $customer, Product $product, Plan $plan): CommerceReply
@@ -546,7 +565,7 @@ class CommerceResponder
             return "Por ahora «{$product->name}» no tiene planes disponibles. Escríbenos más tarde.";
         }
 
-        return "Planes de «{$product->name}»:\n".$this->planLines($plans)."\n\n".($cta ?? 'Escribe «pagar» para suscribirte.');
+        return "Planes de «{$product->name}»:\n".$this->planLines($plans)."\n\n".($cta ?? self::PAY_INSTRUCTION);
     }
 
     /**

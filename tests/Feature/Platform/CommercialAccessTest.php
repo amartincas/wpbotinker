@@ -230,7 +230,7 @@ describe('free sample', function () {
             ->toContain('Número de la suerte calculado: 1.')
             ->not->toContain('SERVICIO-COMPLETO')
             // No closing configured: the plans follow the last free reply directly.
-            ->and(c2Text())->toBe("Tu número de la suerte es 1.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.")
+            ->and(c2Text())->toBe("Tu número de la suerte es 1.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇")
             ->and(SampleDelivery::sole())->capability_key->toBe('oracle.lucky_number');
 
         $calls = count(mainChatRequests());
@@ -616,7 +616,7 @@ describe('commercial requests vs service questions', function () {
         c2Job($this->store, $message);
 
         expect(Payment::count())->toBe(0)
-            ->and(c2Text())->toBe($subscribed ? 'Lectura completa.' : "Para usar «Lectura» necesitas una suscripción.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nEscribe «pagar» para suscribirte.");
+            ->and(c2Text())->toBe($subscribed ? 'Lectura completa.' : "Para usar «Lectura» necesitas una suscripción.\n\nPlanes de «Lectura»:\n1. Mensual: \$20.000 COP por 30 días\n\nSelecciona el plan que prefieras usando uno de los botones de abajo. 👇");
     })->with([
         '¿Debería comprar una casa?',
         '¿Debo pagar mis deudas primero?',
