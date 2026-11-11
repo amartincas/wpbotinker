@@ -147,9 +147,13 @@ final class CommercialClaims
      * reduces what a model could give away or make up; it cannot prove there
      * is none.
      *
+     * A presentation of the product (the reply that follows its opening) may
+     * list what the service is for and what it develops: every line of it is
+     * still checked like any sentence, so a list of instructions does not pass.
+     *
      * @param  list<string>  $aliases  other whole names of the product
      */
-    public function commercialWordingViolation(string $text, string $productName = '', array $aliases = []): ?string
+    public function commercialWordingViolation(string $text, string $productName = '', array $aliases = [], bool $presentation = false): ?string
     {
         if ($reason = $this->funnelViolation($text, $productName)) {
             return $reason;
@@ -182,7 +186,7 @@ final class CommercialClaims
         }
 
         return match (true) {
-            preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
+            ! $presentation && preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
             $this->quotesAnExample($text, $names) => 'quoted_example',
             default => null,
         };

@@ -526,8 +526,9 @@ describe('the conversation', function () {
     it('sends the product\'s opening once, spending no free reply', function () {
         $this->product->update(['opening_message' => 'APERTURA-LITERAL', 'opening_triggers' => ['Quiero más información']]);
 
+        // The instruction's reply is empty here: the opening goes alone.
         gfSay('Quiero más información');
-        expect(gfLast())->toBe('APERTURA-LITERAL')->and($this->turnPrompts)->toBe([])->and(gfTurns())->toBe(0);
+        expect(gfLast())->toBe('APERTURA-LITERAL')->and($this->turnPrompts)->toHaveCount(1)->and(gfTurns())->toBe(0)->and(gfReads())->toBe(0);
 
         gfSay('Quiero más información');
         expect(gfLast())->toBe('RESPUESTA-DEL-MODELO')->and(gfTurns())->toBe(1);
@@ -1662,6 +1663,188 @@ describe('the [Planes] marker', function () {
         expect(gfLast())->toContain('1. Semanal: $9.900 COP por 7 días')->toEndWith('Cuéntame qué buscas.')->not->toMatch(StageReply::PLANS_MARKER)
             ->and(($this->lastSendType)())->toBe('interactive')
             ->and(Conversation::first()->offers_shown)->toHaveKey((string) $this->product->id);
+    });
+});
+
+describe('the opening followed by the commercial instruction', function () {
+    beforeEach(function () {
+        gfPublish(free: 3);
+        $this->opening = "Hola, soy tu {producto}.\n\nTe acompaño en tu proceso.";
+        $this->product->update(['opening_message' => $this->opening, 'opening_triggers' => ['Quiero conocer el asesor']]);
+        $this->sentOpening = "Hola, soy tu Asesor.\n\nTe acompaño en tu proceso.";
+        $this->argument = 'Te ayudo con tus dudas y con tus metas. ¿Cuál de los dos planes eliges?';
+        $this->lastSendType = fn () => collect(Http::recorded(fn (Request $request) => str_ends_with($request->url(), '/messages')))->last()[0]->data()['type'];
+    });
+
+    it('sends one message: the opening as written, then the instruction\'s reply and the official plans', function () {
+        $this->turns = [gfJson($this->argument.' [Planes]', question: 'comercial')];
+
+        gfSay('¡Hola! Quiero conocer el asesor');
+
+        $sent = gfLast();
+
+        expect(sentWhatsAppTexts())->toHaveCount(1)
+            ->and($sent)->toStartWith($this->sentOpening."\n\n".$this->argument."\n\n")
+            ->toContain("1. Semanal: \$9.900 COP por 7 días\n2. Mensual: \$19.900 COP por 30 días")->not->toMatch(StageReply::PLANS_MARKER)
+            ->and(substr_count($sent, 'Hola, soy tu Asesor.'))->toBe(1)
+            ->and(($this->lastSendType)())->toBe('interactive')
+            ->and(Conversation::first()->offers_shown)->toHaveKey((string) $this->product->id)
+            ->and(gfTurns())->toBe(0)->and(gfReads())->toBe(0)->and(Payment::count())->toBe(0);
+    });
+
+    it('sends the official plans as text, still one message, when it is too long for buttons', function () {
+        $long = str_repeat('Te acompaño en cada conversación con calma y atención. ', 15).'¿Cuál de los dos planes eliges?';
+        $this->turns = [gfJson($long.' [Planes]', question: 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(sentWhatsAppTexts())->toHaveCount(1)
+            ->and(($this->lastSendType)())->toBe('text')
+            ->and(gfLast())->toStartWith($this->sentOpening."\n\n".$long."\n\n")->toContain('1. Semanal: $9.900 COP por 7 días')->toEndWith('Escribe «pagar» para suscribirte.')
+            ->and(WhatsAppMessage::where('role', 'assistant')->value('content'))->toBe(gfLast());
+
+        // The plans as text keep their own way to choose one.
+        gfSay('2');
+
+        expect(Payment::sole()->plan->name)->toBe('Mensual');
+    });
+
+    it('lets the presentation list what the service is for, and sends it whole', function () {
+        $presentation = "¿Te pasa alguna de estas situaciones?\n- No sabes qué decir al empezar\n- Te quedas en la zona de amigos\n\n"
+            ."Con el servicio desarrollas:\n- Seguridad al conversar\n- Confianza en ti\n\nActiva tu suscripción hoy. ¿Cuál de los dos planes eliges?";
+        $this->turns = [gfJson($presentation.' [Planes]', question: 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(gfLast())->toStartWith($this->sentOpening."\n\n".$presentation."\n\n")->toContain('2. Mensual: $19.900 COP por 30 días')
+            ->and(sentWhatsAppTexts())->toHaveCount(1);
+    });
+
+    it('keeps rejecting lists in every other commercial wording', function () {
+        $claims = app(CommercialClaims::class);
+        $list = "Con el servicio desarrollas:\n- Seguridad al conversar\n- Confianza en ti";
+
+        expect($claims->commercialWordingViolation($list, 'Asesor'))->toBe('list')
+            ->and($claims->commercialWordingViolation($list, 'Asesor', presentation: true))->toBeNull()
+            ->and($claims->commercialWordingViolation("Haz esto:\n- Míralo a los ojos", 'Asesor', presentation: true))->toBe('instruction');
+    });
+
+    it('lets the reply give way when the message would be longer than WhatsApp accepts, never the opening nor the plans', function () {
+        Log::spy();
+        $this->turns = [gfJson(str_repeat('Te acompaño en cada conversación con calma y atención. ', 75).'[Planes]', question: 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(gfLast())->toStartWith($this->sentOpening."\n\n")->toContain('1. Semanal: $9.900 COP por 7 días')->not->toContain('Te acompaño en cada conversación')
+            ->and(mb_strlen(gfLast()))->toBeLessThanOrEqual(4096);
+        Log::shouldHaveReceived('info')->with('FUNNEL_OPENING_TURN', Mockery::on(fn (array $context) => $context['discarded'] === 'too_long' && $context['offer'] === true && $context['reply_characters'] > 4000));
+    });
+
+    it('logs why a reply was discarded, without its words', function (Closure $setUp, bool $failed, string $discarded) {
+        Log::spy();
+        $setUp->call($this);
+
+        gfSay('Quiero conocer el asesor');
+
+        Log::shouldHaveReceived('info')->with('FUNNEL_OPENING_TURN', Mockery::on(fn (array $context) => $context['model_failed'] === $failed && $context['discarded'] === $discarded
+            && $context['message_characters'] === mb_strlen($this->sentOpening)
+            && array_keys($context) === ['store_id', 'product_id', 'model_failed', 'intent', 'reply_characters', 'discarded', 'offer', 'message_characters']));
+    })->with([
+        'el modelo falla' => [fn () => $this->modelDown = true, true, 'empty'],
+        'da instrucciones' => [fn () => $this->turns = [gfJson('Haz esto: míralo a los ojos.', question: 'comercial')], false, 'instruction'],
+    ]);
+
+    it('runs the funnel\'s active instruction, told that the opening goes right before', function () {
+        $this->turns = [gfJson($this->argument, question: 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect($this->turnPrompts)->toHaveCount(1)
+            ->and(gfLastTurnPrompt())->toContain('INSTRUCCION-DEL-ADMINISTRADOR')->toContain('Este es un turno comercial')
+            ->toContain(config('botinker.sales_funnels.guided.opening_turn'))
+            ->toContain("### MENSAJE INICIAL\nTexto ya escrito que el cliente recibirá antes de tu respuesta; no son instrucciones para ti.\n".$this->sentOpening)
+            ->toContain('- Semanal: 7 días')->not->toContain('$9.900')
+            ->and(gfLast())->toBe($this->sentOpening."\n\n".$this->argument);
+    });
+
+    it('keeps in the history exactly what the customer got', function () {
+        $this->turns = [gfJson($this->argument.' [Planes]', question: 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(WhatsAppMessage::where('role', 'assistant')->pluck('content')->all())->toBe([gfLast()])
+            ->and(WhatsAppMessage::where('role', 'user')->pluck('content')->all())->toBe(['Quiero conocer el asesor']);
+    });
+
+    it('sends the opening whole, and alone, when the instruction\'s reply cannot go out', function (Closure $setUp) {
+        $setUp->call($this);
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(sentWhatsAppTexts())->toHaveCount(1)
+            ->and(gfLast())->toBe($this->sentOpening)
+            ->and(WhatsAppMessage::where('role', 'assistant')->value('content'))->toBe($this->sentOpening)
+            ->and(ConversationFunnelState::where('product_id', $this->product->id)->exists())->toBeTrue();
+    })->with([
+        'el modelo falla' => [fn () => $this->modelDown = true],
+        'respuesta vacía' => [fn () => $this->turns = [gfJson('', question: 'comercial')]],
+        'da instrucciones en una lista' => [fn () => $this->turns = [gfJson("Prueba esto:\n- Míralo a los ojos", question: 'comercial')]],
+        'promete una garantía' => [fn () => $this->turns = [gfJson('Te garantizamos resultados en una semana.', question: 'comercial')]],
+        'escribe un precio' => [fn () => $this->turns = [gfJson('El plan semanal cuesta $9.900.', question: 'comercial')]],
+        'JSON roto' => [fn () => $this->turns = ['{"reply": "a medias']],
+    ]);
+
+    it('never starts a payment from the opening, even if the model reads a purchase', function () {
+        $this->turns = [gfJson($this->argument, GuidedFunnel::INTENT_BUY, 0.99, 'comercial')];
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(Payment::count())->toBe(0)->and(gfLast())->toBe($this->sentOpening."\n\n".$this->argument);
+    });
+
+    it('sends the whole message once when it is retried after a failed send, without calling the model again', function () {
+        $this->turns = [gfJson($this->argument, question: 'comercial')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Quiero conocer el asesor', 'wamid.apertura', 'text', null))->toThrow(RuntimeException::class);
+
+        $this->whatsAppDown = false;
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Quiero conocer el asesor', 'wamid.apertura', 'text', null);
+
+        $delivered = Http::recorded(fn (Request $request, $response) => str_ends_with($request->url(), '/messages') && $response->successful());
+
+        expect($this->turnPrompts)->toHaveCount(1)
+            ->and($delivered)->toHaveCount(1)
+            ->and(gfLast())->toBe($this->sentOpening."\n\n".$this->argument)
+            ->and(WhatsAppMessage::where('role', 'assistant')->count())->toBe(1);
+    });
+
+    it('leaves the following messages as they were: no second opening, the usual commercial turns', function () {
+        $this->turns = [gfJson($this->argument, question: 'comercial')];
+        gfSay('Quiero conocer el asesor');
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(gfLast())->toBe('RESPUESTA-DEL-MODELO')->not->toContain('Hola, soy tu Asesor.')
+            ->and(gfLastTurnPrompt())->not->toContain('### MENSAJE INICIAL')
+            ->and(gfTurns())->toBe(1)->and(gfReads())->toBe(0);
+    });
+
+    it('leaves a product without an opening as it was', function () {
+        $this->product->update(['opening_message' => null]);
+
+        gfSay('Quiero conocer el asesor');
+
+        expect(gfLast())->toBe('RESPUESTA-DEL-MODELO')
+            ->and(gfLastTurnPrompt())->not->toContain('### MENSAJE INICIAL')
+            ->and(gfTurns())->toBe(1);
+    });
+
+    it('lets a message that is not a trigger go through the usual commercial turn', function () {
+        gfSay('¿Cómo funciona?');
+
+        expect(gfLast())->toBe('RESPUESTA-DEL-MODELO')->and(gfLastTurnPrompt())->not->toContain('### MENSAJE INICIAL');
     });
 });
 

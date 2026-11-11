@@ -66,6 +66,9 @@ class ConversationPipeline
     /** Characters kept of the question a clarification interrupted. */
     private const MAX_ORIGIN_LENGTH = 1000;
 
+    /** The longest text message WhatsApp accepts. */
+    private const MAX_WHATSAPP_TEXT = 4096;
+
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
 
@@ -353,6 +356,14 @@ class ConversationPipeline
             return;
         }
 
+        // A guided funnel's opening is followed by its commercial instruction, in the same message.
+        // An opening that already shows the plans goes out alone, as configured.
+        if ($step->kind === FunnelStep::LITERAL && $step->isOpening && $step->definition->guided && ! $this->carriesPlans($step->text)) {
+            $this->openingTurn($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $wamid);
+
+            return;
+        }
+
         if ($step->kind === FunnelStep::LITERAL) {
             $reservation = null;
 
@@ -474,6 +485,79 @@ class ConversationPipeline
 
             throw $e;
         }
+    }
+
+    /**
+     * The first message of a guided funnel that triggers the product's opening:
+     * one message with the opening exactly as written and, after it, the
+     * funnel's commercial instruction in the model's words. The model is told
+     * the opening goes right before its reply, so it does not present the
+     * product again. Its wording passes like any commercial one, and [Planes]
+     * adds the Core's official plans. Without a reply that may go out, the
+     * opening goes alone, as it did before.
+     *
+     * Like the opening alone, it spends no free reply nor read: it happens once
+     * per conversation, since the state only exists once it was sent. A retry
+     * reuses the model's answer and sends the whole message again.
+     */
+    private function openingTurn(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, ?string $wamid): void
+    {
+        $definition = $step->definition;
+        $stage = $definition->start();
+        $opening = $this->fillPlaceholders($step->text, $product);
+        $turnKey = $wamid !== null ? "{$wamid}#turn" : null;
+        $reply = null;
+        $modelFailed = false;
+
+        try {
+            $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
+            $raw = $this->rememberedSample($store, $turnKey);
+
+            if ($raw === null) {
+                $raw = AIServiceFactory::make($store)->getResponse(
+                    $messageBody,
+                    $this->prompts->buildFunnelStage($store, $domain, $product, $definition, $stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true, opening: $opening),
+                    $this->history($store, $from, $domain->key()),
+                );
+                $this->rememberSample($store, $turnKey, $raw);
+            }
+
+            $reply = StageReply::parse($raw, true, $definition->intents);
+        } catch (Throwable $e) {
+            $modelFailed = true;
+            Log::warning('FUNNEL_OPENING_TURN_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
+
+        // A presentation: it may list what the service is for, each line checked as any sentence.
+        $violation = $reply?->reply !== null ? $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases, presentation: true) : 'empty';
+        // Only the plans: asking to know the product is never a purchase.
+        $shows = $reply !== null && $this->funnels->afterReply(FunnelStep::read($definition, $stage, 0), $reply)->action === FunnelDefinition::ACTION_SHOW_OFFER;
+        $offer = $shows ? $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $definition, FunnelDefinition::ACTION_SHOW_OFFER, true) : null;
+        $join = fn (?string $argument) => implode("\n\n", array_filter([$opening, $argument, $offer], fn (?string $part) => $part !== null && $part !== ''));
+
+        // WhatsApp refuses a longer text: the reply gives way, never the opening nor the plans.
+        if ($violation === null && mb_strlen($join($reply->reply)) > self::MAX_WHATSAPP_TEXT) {
+            $violation = 'too_long';
+        }
+
+        $argument = $violation === null ? $reply->reply : null;
+        $text = $join($argument);
+
+        Log::info('FUNNEL_OPENING_TURN', [
+            'store_id' => $store->id, 'product_id' => $product->id, 'model_failed' => $modelFailed, 'intent' => $reply?->intent,
+            'reply_characters' => mb_strlen((string) $reply?->reply), 'discarded' => $violation, 'offer' => $shows, 'message_characters' => mb_strlen($text),
+        ]);
+
+        if ($argument !== null) {
+            $this->observeClaims($store, $domain, $product, FunnelStep::read($definition, $stage, 0), $argument, $wamid);
+        }
+
+        // The opening replaces the store's welcome, as when it goes alone.
+        $this->welcome = null;
+        $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
+        $this->afterFunnelOffer($shows, $conversation, $product);
+        $this->forgetSample($store, $turnKey);
+        $this->funnels->advance($conversation, $product, $funnel, $stage->key, 0);
     }
 
     /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
