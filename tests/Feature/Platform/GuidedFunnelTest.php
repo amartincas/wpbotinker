@@ -34,10 +34,12 @@ use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStates;
 use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelVersions;
+use App\Platform\Funnel\StageReply;
 use App\Platform\Knowledge\KnowledgeIngestor;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
 
@@ -52,6 +54,7 @@ beforeEach(function () {
     $this->chats = [];
     $this->sections = [];
     $this->modelDown = false;
+    $this->selectorDown = false;
     $this->whatsAppDown = false;
 
     Http::fake(function (Request $request) {
@@ -61,6 +64,10 @@ beforeEach(function () {
 
             if (str_contains($system, 'Eres un selector de conocimiento')) {
                 $this->selectorCalls++;
+
+                if ($this->selectorDown) {
+                    return Http::response(['error' => 'upstream'], 500);
+                }
 
                 return Http::response(['choices' => [['message' => ['content' => json_encode(['needs_knowledge' => true, 'sections' => $this->sections])]]]]);
             }
@@ -94,9 +101,9 @@ beforeEach(function () {
     $this->versions = app(SalesFunnelVersions::class);
 });
 
-function gfJson(string $reply, ?string $intent = null, float $confidence = 0.0): string
+function gfJson(string $reply, ?string $intent = null, float $confidence = 0.0, ?string $question = null): string
 {
-    return json_encode(['reply' => $reply, 'intent' => $intent, 'confidence' => $confidence], JSON_UNESCAPED_UNICODE);
+    return json_encode(['reply' => $reply, 'intent' => $intent, 'confidence' => $confidence] + ($question !== null ? ['question' => $question] : []), JSON_UNESCAPED_UNICODE);
 }
 
 function gfPublish(string $instructions = 'INSTRUCCION-DEL-ADMINISTRADOR', int $free = 3): SalesFunnel
@@ -134,9 +141,9 @@ function gfTurns(): int
     return (int) SampleDelivery::where('product_id', test()->product->id)->value('turns_used');
 }
 
-function gfSource(string $title, string $marker, string $purpose): void
+function gfSource(string $title, string $marker, string $purpose, string $delivery = KnowledgeSource::DELIVERY_REFERENCE): void
 {
-    app(KnowledgeIngestor::class)->ingest(test()->store, 'tema', test()->product, 'Fuente', 'markdown', "# {$title}\n\n{$marker}", origin: 'origen-'.Str::random(6), purpose: $purpose);
+    app(KnowledgeIngestor::class)->ingest(test()->store, 'tema', test()->product, 'Fuente', 'markdown', "# {$title}\n\n{$marker}", origin: 'origen-'.Str::random(6), purpose: $purpose, delivery: $delivery);
 }
 
 function gfSeedTurn(?string $domain, string $question, string $answer): void
@@ -654,12 +661,23 @@ describe('the reply after the limit', function () {
             ->not->toContain('necesitas una suscripción');
     });
 
-    it('shows the plans again once the offer is no longer recent', function () {
+    it('shows the plans again once the offer is no longer recent, only for a commercial question', function () {
+        $this->travel(25)->hours();
+        $this->replies = [gfJson('CONTENIDO-GENERADO-POR-IA', question: 'comercial')];
+
+        gfSay('¿Cómo se paga?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('never adds the plan list to any other question, however old the offer: only how to ask for it', function () {
         $this->travel(25)->hours();
 
         gfSay('¿Cómo identifico sus señales?');
 
-        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->toContain('$9.900')->toContain('$19.900');
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))
+            ->toEndWith('Escribe «planes» para ver los precios o «pagar» para suscribirte.')
+            ->not->toContain('$9.900');
     });
 });
 
@@ -726,19 +744,28 @@ describe('the commercial replies after the limit', function () {
             ->and(gfReads())->toBe(1);
     });
 
-    it('adds the plans only when they were not just shown', function () {
+    it('adds the plans to a commercial question only when they were not just shown', function () {
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->travel(25)->hours();
+
+        gfSay('¿Cómo funciona la suscripción?');
+
+        expect(gfLast())->toStartWith($this->comercial)->toContain('$9.900')->toContain('$19.900');
+
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+
+        gfSay('¿Y se renueva sola?');
+
+        expect(gfLast())->toBe($this->comercial);
+    });
+
+    it('adds to any other question only how to ask for the plans, when they were not just shown', function () {
         $this->replies = [gfJson($this->comercial)];
         $this->travel(25)->hours();
 
         gfSay('¿Cómo identifico sus señales?');
 
-        expect(gfLast())->toStartWith($this->comercial)->toContain('$9.900')->toContain('$19.900');
-
-        $this->replies = [gfJson($this->comercial)];
-
-        gfSay('¿Y cómo le pido su número?');
-
-        expect(gfLast())->toBe($this->comercial);
+        expect(gfLast())->toBe($this->comercial."\n\nEscribe «planes» para ver los precios o «pagar» para suscribirte.");
     });
 
     it('still reads a purchase in the customer\'s words while reads are left, spending one', function () {
@@ -841,6 +868,290 @@ describe('the commercial replies after the limit', function () {
             ->and($take('wamid.nuevo'))->toBeFalse()
             ->and(gfReads())->toBe(5);
     });
+});
+
+describe('the question after the limit', function () {
+    beforeEach(function () {
+        // The last free reply closes with the offer: from here it is recent.
+        gfPublish(free: 1);
+        gfSay('¿Cómo funciona?');
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+    });
+
+    it('reads the question the model was asked for: commercial, content, or nothing else', function (string $raw, ?string $question) {
+        expect(StageReply::parse($raw, true, ['comprar' => 'c'])->question)->toBe($question);
+    })->with([
+        'comercial' => [gfJson('R', question: 'comercial'), 'comercial'],
+        'contenido' => [gfJson('R', question: 'contenido'), 'contenido'],
+        'ausente' => [gfJson('R'), null],
+        'nulo' => ['{"reply": "R", "question": null}', null],
+        'con mayúsculas y espacios' => ['{"reply": "R", "question": " Contenido "}', 'contenido'],
+        'en mayúsculas' => ['{"reply": "R", "question": "COMERCIAL"}', 'comercial'],
+        'inválido' => ['{"reply": "R", "question": "compra"}', null],
+        'otro tipo' => ['{"reply": "R", "question": ["comercial"]}', null],
+        'texto plano' => ['comercial', null],
+    ]);
+
+    it('asks the model for the question, in the field the Core reads', function () {
+        gfSay('¿Cómo identifico sus señales?');
+
+        expect(gfLastPrompt())->toContain('"question": "comercial"')->toContain('"contenido"');
+    });
+
+    it('shows the offer the model proposes for a commercial question', function () {
+        $this->replies = [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'comercial')];
+
+        gfSay('¿Qué opciones de pago tienen?');
+
+        expect(gfLast())->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('never shows the offer unless the question was read as commercial, however old the offer', function (string $raw) {
+        Log::spy();
+        $this->travel(25)->hours();
+        $this->replies = [$raw];
+
+        gfSay('¿Cómo identifico sus señales?');
+
+        expect(gfLast())->not->toContain('$9.900')->toEndWith($this->pointer)
+            ->and(ConversationFunnelState::first()?->stage)->toBe(GuidedFunnel::STAGE);
+
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['action_rejected'] === 'offer_unclassified'));
+    })->with([
+        'contenido' => [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9, 'contenido')],
+        'ausente' => [gfJson('', GuidedFunnel::INTENT_OFFER, 0.9)],
+        'nulo' => ['{"reply": "", "intent": "presentar_oferta", "confidence": 0.9, "question": null}'],
+        'inválido' => ['{"reply": "", "intent": "presentar_oferta", "confidence": 0.9, "question": "planes"}'],
+    ]);
+
+    it('takes "ok, lo tomo" right after the offer as a purchase, with no question read', function () {
+        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9)];
+
+        gfSay('Ok, lo tomo');
+
+        expect(gfLast())->toContain('¿Qué plan de «Asesor» quieres?')->and(Payment::count())->toBe(0);
+    });
+
+    it('takes a purchase read as commercial, even with no recent offer', function () {
+        $this->travel(25)->hours();
+        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.9, 'comercial')];
+
+        gfSay('Quiero comprarlo ya mismo');
+
+        expect(gfLast())->toContain('¿Qué plan de «Asesor» quieres?');
+    });
+
+    it('never starts a purchase for a content question or an ambiguous answer just because the offer is recent', function (string $raw, string $message) {
+        $this->replies = [$raw];
+
+        gfSay($message);
+
+        expect(gfLast())->not->toContain('¿Qué plan de «Asesor» quieres?')->not->toContain('$9.900')
+            ->and(Payment::count())->toBe(0)
+            ->and(Conversation::first()->pending_state)->toBeNull();
+    })->with([
+        'contenido' => [gfJson('', GuidedFunnel::INTENT_BUY, 0.95, 'contenido'), '¿Cómo le hablo para que me diga que sí?'],
+        'Contenido, con mayúscula' => [gfJson('', GuidedFunnel::INTENT_BUY, 0.95, 'Contenido'), '¿Cómo le hablo para que me diga que sí?'],
+        'sin seguridad' => [gfJson('', GuidedFunnel::INTENT_BUY, 0.5), 'Puede ser'],
+        'sin intención' => [gfJson('Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes.'), 'Mmm, vale'],
+        'roto' => ['{"intent": "comprar", "confidence": 0.95, roto', 'Ok'],
+    ]);
+
+    it('never starts a purchase with no question read once the offer is no longer recent', function () {
+        $this->travel(25)->hours();
+        $this->replies = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95)];
+
+        gfSay('Ok, lo tomo');
+
+        expect(gfLast())->not->toContain('¿Qué plan de «Asesor» quieres?')->and(Payment::count())->toBe(0);
+    });
+
+    it('keeps every action the Core recognizes, without the model', function (string $message, string $expected) {
+        $calls = count($this->prompts);
+
+        gfSay($message);
+
+        expect(gfLast())->toContain($expected)->and($this->prompts)->toHaveCount($calls)->and(gfReads())->toBe(0);
+    })->with([
+        'pagar' => ['Pagar', '¿Qué plan de «Asesor» quieres?'],
+        'planes' => ['Planes', '$19.900'],
+        'un plan por su nombre' => ['Quiero el mensual', 'INSTRUCCIONES-PAGO'],
+        'su frase de compra' => ['Quiero mi acceso', '¿Qué plan de «Asesor» quieres?'],
+        'su frase de opciones' => ['Ver opciones', '$19.900'],
+    ]);
+});
+
+describe('the literal commercial answers after the limit', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        gfSay('¿Cómo funciona?');
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+        $this->comercial = 'Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes.';
+    });
+
+    it('answers a commercial question with the verbatim resource exactly as written, within the same read', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $calls = count($this->prompts);
+        $selectors = $this->selectorCalls;
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        expect(gfLast())->toBe("TEXTO-LITERAL-APROBADO\n\n".$this->pointer)
+            ->and($this->prompts)->toHaveCount($calls + 1)
+            ->and($this->selectorCalls)->toBe($selectors + 1)
+            ->and(gfReads())->toBe(1)
+            ->and(gfTurns())->toBe(1)
+            ->and(Payment::count())->toBe(0);
+    });
+
+    it('adds the plans after the literal answer when they were not just shown', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+        $this->travel(25)->hours();
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        expect(gfLast())->toStartWith('TEXTO-LITERAL-APROBADO')->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('offers and sends only verbatim commercial resources: never one to be worded, the sample or the knowledge', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        gfSource('Qué incluye', 'TEXTO-PARA-REDACTAR', KnowledgeSource::PURPOSE_COMMERCIAL);
+        gfSource('Solo para redactar', 'OTRO-TEXTO-PARA-REDACTAR', KnowledgeSource::PURPOSE_COMMERCIAL);
+        gfSource('Qué incluye', 'TEXTO-DE-MUESTRA', KnowledgeSource::PURPOSE_SAMPLE, KnowledgeSource::DELIVERY_VERBATIM);
+        gfSource('Qué incluye', 'TEXTO-EXCLUSIVO', KnowledgeSource::PURPOSE_KNOWLEDGE);
+        $this->sections = ['Qué incluye', 'Solo para redactar'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $this->chats = [];
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        $selector = collect($this->chats)->first(fn (array $messages) => str_contains($messages[0]['content'], 'Eres un selector de conocimiento'));
+
+        expect(gfLast())->toBe("TEXTO-LITERAL-APROBADO\n\n".$this->pointer)
+            ->and(collect($selector)->pluck('content')->implode(' '))->not->toContain('Solo para redactar');
+    });
+
+    it('leaves out resources with an amount before keeping two', function () {
+        app(KnowledgeIngestor::class)->ingest($this->store, 'tema', $this->product, 'Fuente', 'markdown',
+            "# Precio\n\nCuesta $50.000 al mes.\n\n# Uno\n\nTEXTO-UNO\n\n# Dos\n\nTEXTO-DOS\n\n# Tres\n\nTEXTO-TRES",
+            origin: 'origen-literal', purpose: KnowledgeSource::PURPOSE_COMMERCIAL, delivery: KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Precio', 'Uno', 'Dos', 'Tres'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+
+        gfSay('¿Qué incluye y cuánto cuesta?');
+
+        expect(gfLast())->toBe("TEXTO-UNO\n\nTEXTO-DOS\n\n".$this->pointer);
+    });
+
+    it('says it has no confirmed information when nothing configured answers the question', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = [];
+        $this->replies = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
+
+        gfSay('¿El entrenamiento tiene garantía?');
+
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.undocumented_reply')."\n\n".$this->pointer)
+            ->not->toContain('30 días')->not->toContain('TEXTO-LITERAL-APROBADO');
+    });
+
+    it('also counts a resource whose only match states an amount as nothing configured', function () {
+        gfSource('Precio', 'Cuesta $50.000 al mes.', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Precio'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+
+        gfSay('¿Cuánto vale al mes el entrenamiento, más o menos?');
+
+        expect(gfLast())->not->toContain('50.000');
+    });
+
+    it('never claims there is no information when the selection failed: the fixed reply goes', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->selectorDown = true;
+        $this->replies = [gfJson('Sí, tiene garantía de 30 días.', question: 'comercial')];
+
+        gfSay('¿El entrenamiento tiene garantía?');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))
+            ->not->toContain(config('botinker.sales_funnels.guided.undocumented_reply'))->not->toContain('30 días');
+    });
+
+    it('keeps the current behaviour, with no selector call, when there is no verbatim commercial resource', function () {
+        gfSource('Qué incluye', 'TEXTO-PARA-REDACTAR', KnowledgeSource::PURPOSE_COMMERCIAL);
+        $this->sections = ['Qué incluye'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $selectors = $this->selectorCalls;
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        expect(gfLast())->toBe($this->comercial)->and($this->selectorCalls)->toBe($selectors);
+    });
+
+    it('keeps the current behaviour, with no selector call, without commercial instructions', function () {
+        $this->product->update(['commercial_instructions' => null]);
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $selectors = $this->selectorCalls;
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        expect(gfLast())->toBe($this->comercial)->and($this->selectorCalls)->toBe($selectors);
+    });
+
+    it('never consults the resources for a question that is not commercial', function (?string $question) {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+        $this->replies = [gfJson($this->comercial, question: $question)];
+        $selectors = $this->selectorCalls;
+
+        gfSay('¿Cómo identifico sus señales?');
+
+        expect(gfLast())->not->toContain('TEXTO-LITERAL-APROBADO')->and($this->selectorCalls)->toBe($selectors);
+    })->with(['contenido' => 'contenido', 'sin leer' => null]);
+
+    it('does not spend a second read nor send twice when a literal answer is retried after a failed delivery', function () {
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+        $calls = count($this->prompts);
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Qué incluye?', 'wamid.reintento', 'text', null))->toThrow(RuntimeException::class);
+
+        $this->whatsAppDown = false;
+
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Qué incluye?', 'wamid.reintento', 'text', null);
+
+        $delivered = Http::recorded(fn (Request $request, $response) => str_ends_with($request->url(), '/messages')
+            && str_starts_with($request->data()['text']['body'] ?? '', 'TEXTO-LITERAL-APROBADO')
+            && $response->successful());
+
+        expect(gfReads())->toBe(1)
+            ->and($this->prompts)->toHaveCount($calls + 1)
+            ->and($delivered)->toHaveCount(1)
+            ->and(gfLast())->toBe("TEXTO-LITERAL-APROBADO\n\n".$this->pointer)
+            ->and(gfTurns())->toBe(1);
+    });
+
+    it('keeps the free replies as each product configures them', function (int $free) {
+        gfPublish(free: $free);
+        gfSource('Qué incluye', 'TEXTO-LITERAL-APROBADO', KnowledgeSource::PURPOSE_COMMERCIAL, KnowledgeSource::DELIVERY_VERBATIM);
+        $this->sections = ['Qué incluye'];
+
+        for ($turn = 2; $turn <= $free; $turn++) {
+            gfSay("Pregunta {$turn}");
+        }
+
+        $this->replies = [gfJson($this->comercial, question: 'comercial')];
+
+        gfSay('¿Qué incluye el entrenamiento?');
+
+        expect(gfTurns())->toBe($free)->and(gfLast())->toStartWith('TEXTO-LITERAL-APROBADO');
+    })->with([1, 3]);
 });
 
 describe('what the model receives after the limit', function () {

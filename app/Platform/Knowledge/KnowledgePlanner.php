@@ -70,11 +70,12 @@ class KnowledgePlanner
      * instructions. Choosing none is a valid answer: nothing to use.
      *
      * @param  array<string, mixed>  $facts  fact key => value the domain may read
+     * @param  string|null  $delivery  only resources delivered this way are offered; null for any
      */
-    public function planCommercial(Store $store, DomainModule $domain, Product $product, string $message, array $facts): KnowledgePlan
+    public function planCommercial(Store $store, DomainModule $domain, Product $product, string $message, array $facts, ?string $delivery = null): KnowledgePlan
     {
         return $this->select($store, $domain, $product, $message, $facts, KnowledgeSource::PURPOSE_COMMERCIAL,
-            'GUÍA COMERCIAL DEL PRODUCTO', (string) $product->commercial_instructions, self::COMMERCIAL_REQUEST, false);
+            'GUÍA COMERCIAL DEL PRODUCTO', (string) $product->commercial_instructions, self::COMMERCIAL_REQUEST, false, $delivery);
     }
 
     /**
@@ -95,11 +96,11 @@ class KnowledgePlanner
     /**
      * @param  array<string, mixed>  $facts
      */
-    private function select(Store $store, DomainModule $domain, ?Product $product, string $message, array $facts, string $purpose, string $guideLabel, string $guide, string $responseType, bool $sourcesRequired): KnowledgePlan
+    private function select(Store $store, DomainModule $domain, ?Product $product, string $message, array $facts, string $purpose, string $guideLabel, string $guide, string $responseType, bool $sourcesRequired, ?string $delivery = null): KnowledgePlan
     {
         // Consulted even without titles: it still tells a message that
         // needs the sources from one that does not.
-        $headings = $this->retriever->headings($store, $domain->key(), $product, purpose: $purpose);
+        $headings = $this->retriever->headings($store, $domain->key(), $product, purpose: $purpose, delivery: $delivery);
 
         try {
             // The topic's knowledge keeps INSTRUCTION exactly; another purpose
@@ -122,7 +123,7 @@ class KnowledgePlanner
 
         [$needsKnowledge, $sections] = $parsed;
         $needsKnowledge = $needsKnowledge || $sourcesRequired;
-        $fragments = $this->retriever->retrieveByKeys($store, $domain->key(), $product, $sections, purpose: $purpose);
+        $fragments = $this->retriever->retrieveByKeys($store, $domain->key(), $product, $sections, purpose: $purpose, delivery: $delivery);
 
         Log::info('KNOWLEDGE_PLANNED', [
             'store_id' => $store->id,

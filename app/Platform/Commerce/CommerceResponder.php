@@ -322,10 +322,16 @@ class CommerceResponder
         }
 
         if ($this->offerRecentlyShown($product, $conversation)) {
-            return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+            return $this->offerPointer();
         }
 
         return $this->offerText($product);
+    }
+
+    /** How to see the plans, in one line: what goes instead of the plan list itself. */
+    public function offerPointer(): string
+    {
+        return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
     }
 
     /** Whether this conversation saw the product's offer within the configured interval. */

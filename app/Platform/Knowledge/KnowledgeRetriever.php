@@ -68,9 +68,10 @@ class KnowledgeRetriever
      * product's chunks before the domain's, each in document order.
      *
      * @param  list<string>  $keys
+     * @param  string|null  $delivery  only sources delivered this way; null for any
      * @return Collection<int, KnowledgeChunk>
      */
-    public function retrieveByKeys(Store $store, string $domainKey, ?Product $product, array $keys, int $limit = self::MAX_KEYED_FRAGMENTS, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE): Collection
+    public function retrieveByKeys(Store $store, string $domainKey, ?Product $product, array $keys, int $limit = self::MAX_KEYED_FRAGMENTS, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE, ?string $delivery = null): Collection
     {
         $priority = [];
 
@@ -86,7 +87,7 @@ class KnowledgeRetriever
             return collect();
         }
 
-        return $this->scope($store, $domainKey, $product, $purpose)
+        return $this->scope($store, $domainKey, $product, $purpose, $delivery)
             ->whereNotNull('heading')
             ->get()
             ->filter(fn (KnowledgeChunk $chunk) => isset($priority[$this->normalizeHeading($chunk->heading)]))
@@ -104,11 +105,12 @@ class KnowledgeRetriever
      * (same scope as retrieval: active sources, the domain's chunks plus
      * the current product's, never another store, domain or product).
      *
+     * @param  string|null  $delivery  only sources delivered this way; null for any
      * @return list<string>
      */
-    public function headings(Store $store, string $domainKey, ?Product $product, int $limit = 300, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE): array
+    public function headings(Store $store, string $domainKey, ?Product $product, int $limit = 300, string $purpose = KnowledgeSource::PURPOSE_KNOWLEDGE, ?string $delivery = null): array
     {
-        return $this->scope($store, $domainKey, $product, $purpose)
+        return $this->scope($store, $domainKey, $product, $purpose, $delivery)
             ->whereNotNull('heading')
             ->orderBy('id')
             ->pluck('heading')
@@ -120,15 +122,16 @@ class KnowledgeRetriever
 
     /**
      * This store and domain; domain-level chunks plus the current product's;
-     * active sources of one purpose only.
+     * active sources of one purpose only (and one delivery, when given).
      */
-    private function scope(Store $store, string $domainKey, ?Product $product, string $purpose): Builder
+    private function scope(Store $store, string $domainKey, ?Product $product, string $purpose, ?string $delivery = null): Builder
     {
         return KnowledgeChunk::query()
             ->where('store_id', $store->id)
             ->where('domain_key', $domainKey)
             ->where(fn ($query) => $query->whereNull('product_id')->when($product, fn ($q) => $q->orWhere('product_id', $product->id)))
-            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE)->where('purpose', $purpose));
+            ->whereHas('source', fn ($query) => $query->where('status', KnowledgeSource::STATUS_ACTIVE)->where('purpose', $purpose)
+                ->when($delivery, fn ($q) => $q->where('delivery', $delivery)));
     }
 
     private function normalizeHeading(string $heading): string

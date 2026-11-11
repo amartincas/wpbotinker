@@ -436,20 +436,28 @@ class ConversationPipeline
      * wants and words a commercial reply that the Core validates. Without reads,
      * if the model fails or if its reply does not pass, the customer gets the
      * Core's fixed reply, which says how to see the plans and pay.
+     *
+     * The model also says whether the message asks about the product as a
+     * purchase (question 'comercial'): only then may the offer be shown, and
+     * only then the product's verbatim commercial resources answer it, exactly
+     * as written (CommercialAdvisor::literalAnswer()), within the same read.
+     * Any other message gets no plan list, only how to ask for it.
      */
     private function readAfterFreeReplies(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, AccessDecision $access, ?string $wamid): void
     {
         $outcome = null;
         $reply = null;
+        $facts = [];
         $canRead = $this->funnels->takeLimitRead($conversation, $product, $funnel, $step->stage->key, $wamid);
 
         if ($canRead) {
             try {
+                $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
+
                 // A retry of the same message reuses the answer already generated.
                 $raw = $this->rememberedSample($store, $wamid);
 
                 if ($raw === null) {
-                    $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
                     $raw = AIServiceFactory::make($store)->getResponse(
                         $messageBody,
                         $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), freeRepliesOver: true),
@@ -465,17 +473,22 @@ class ConversationPipeline
             }
         }
 
-        if ($outcome?->action === FunnelDefinition::ACTION_START_PAYMENT) {
-            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action, 'discarded' => null]);
+        $rejected = $outcome?->action !== null ? $this->limitActionRejection($outcome->action, $reply, $product, $conversation) : null;
+        $action = $rejected === null ? $outcome?->action : null;
+        $commercial = $reply?->question === StageReply::QUESTION_COMMERCIAL;
+        $read = ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply?->intent, 'confidence' => $reply?->confidence, 'question' => $reply?->question, 'action_rejected' => $rejected];
+
+        if ($action === FunnelDefinition::ACTION_START_PAYMENT) {
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
             $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
             $this->forgetSample($store, $wamid);
 
             return;
         }
 
-        if ($outcome?->action === FunnelDefinition::ACTION_SHOW_OFFER) {
-            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => $outcome->action, 'discarded' => null]);
-            $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $outcome->action, true), $domain->key());
+        if ($action === FunnelDefinition::ACTION_SHOW_OFFER) {
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
+            $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true), $domain->key());
             $this->afterFunnelOffer(true, $conversation, $product);
             $this->forgetSample($store, $wamid);
             $this->funnels->advance($conversation, $product, $funnel, $outcome->nextStage, $outcome->interactions);
@@ -483,26 +496,47 @@ class ConversationPipeline
             return;
         }
 
+        $literal = $outcome !== null && $commercial ? $this->advisor->literalAnswer($store, $domain, $product, $messageBody, $facts) : null;
         $violation = $reply?->reply !== null ? $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases) : 'empty';
 
         if ($outcome !== null) {
-            Log::info('FUNNEL_LIMIT_READ', ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply->intent, 'confidence' => $reply->confidence, 'action' => null, 'discarded' => $violation]);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literal['reason'] ?? null]);
         } elseif (! $canRead) {
             Log::info('FUNNEL_LIMIT_READS_EXHAUSTED', ['store_id' => $store->id, 'product_id' => $product->id]);
         }
 
-        if ($outcome !== null && $violation === null) {
-            // The model already invited: the plans only join if they were not just shown.
-            $text = $this->commerce->offerRecentlyShown($product, $conversation)
-                ? $reply->reply
-                : $reply->reply."\n\n".$this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation);
-        } else {
-            $text = trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation);
-        }
+        // A commercial question gets the offer at its configured frequency; any other message, only how to ask for it.
+        $offer = fn () => $commercial ? $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation) : $this->commerce->offerPointer();
+
+        $text = match (true) {
+            ($literal['reason'] ?? null) === 'answered' => $literal['text']."\n\n".$offer(),
+            ($literal['reason'] ?? null) === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
+            // The model already invited: something about the plans joins only if they were not just shown.
+            $outcome !== null && $violation === null => $this->commerce->offerRecentlyShown($product, $conversation) ? $reply->reply : $reply->reply."\n\n".$offer(),
+            default => trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$offer(),
+        };
 
         $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
         $this->commerce->recordOfferIfSent($conversation, $product, $text);
         $this->forgetSample($store, $wamid);
+    }
+
+    /**
+     * Why the Core does not take the action the model proposed after the free
+     * replies, or null. The offer needs a message read as commercial; a
+     * purchase, one not read as content, and either read as commercial or
+     * right after the offer ("ok, lo tomo").
+     */
+    private function limitActionRejection(string $action, StageReply $reply, Product $product, Conversation $conversation): ?string
+    {
+        return match ($action) {
+            FunnelDefinition::ACTION_SHOW_OFFER => $reply->question === StageReply::QUESTION_COMMERCIAL ? null : 'offer_unclassified',
+            FunnelDefinition::ACTION_START_PAYMENT => $reply->question === StageReply::QUESTION_COMMERCIAL
+                || ($reply->question === null && $this->commerce->offerRecentlyShown($product, $conversation))
+                    ? null
+                    : 'purchase_without_context',
+            default => null,
+        };
     }
 
     private function releaseFunnelReply(?SampleDelivery &$reservation): void

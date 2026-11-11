@@ -42,6 +42,9 @@ use Throwable;
  */
 class CommercialAdvisor
 {
+    /** Verbatim resources in one literal answer, at most. */
+    private const MAX_LITERAL_FRAGMENTS = 2;
+
     public function __construct(
         private readonly KnowledgeRetriever $retriever,
         private readonly KnowledgePlanner $planner,
@@ -143,6 +146,55 @@ class CommercialAdvisor
         ]);
 
         return implode("\n\n", $parts);
+    }
+
+    /**
+     * A commercial answer made only of the product's verbatim commercial
+     * resources, exactly as configured: no model words it. For a guided funnel
+     * once the free replies are over, where nothing but what the administrator
+     * wrote for prospects may go out. Resources stating an amount are left out
+     * before taking at most MAX_LITERAL_FRAGMENTS.
+     *
+     * The reason tells why there is no text: 'no_instructions' and
+     * 'no_resources' (nothing to consult, and no AI call), 'failed' (the
+     * selection failed: the material is unknown), 'no_match' (nothing
+     * configured answers this message); 'answered' with the text.
+     *
+     * @param  array<string, mixed>  $facts  fact key => value the domain may read
+     * @return array{text: string|null, reason: string}
+     */
+    public function literalAnswer(Store $store, DomainModule $domain, Product $product, string $message, array $facts): array
+    {
+        if (trim((string) $product->commercial_instructions) === '') {
+            return ['text' => null, 'reason' => 'no_instructions'];
+        }
+
+        try {
+            if ($this->retriever->headings($store, $domain->key(), $product, purpose: KnowledgeSource::PURPOSE_COMMERCIAL, delivery: KnowledgeSource::DELIVERY_VERBATIM) === []) {
+                return ['text' => null, 'reason' => 'no_resources'];
+            }
+
+            $plan = $this->planner->planCommercial($store, $domain, $product, $message, $this->shareableFacts($domain, $facts), KnowledgeSource::DELIVERY_VERBATIM);
+        } catch (Throwable $e) {
+            Log::warning('COMMERCIAL_LITERAL_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
+
+            return ['text' => null, 'reason' => 'failed'];
+        }
+
+        if ($plan->status === 'failed') {
+            return ['text' => null, 'reason' => 'failed'];
+        }
+
+        $parts = $plan->fragments
+            ->reject(fn (KnowledgeChunk $chunk) => $this->claims->amount($chunk->content) !== null)
+            ->take(self::MAX_LITERAL_FRAGMENTS)
+            ->map(fn (KnowledgeChunk $chunk) => trim($chunk->content))
+            ->filter()
+            ->values();
+
+        return $parts->isEmpty()
+            ? ['text' => null, 'reason' => 'no_match']
+            : ['text' => $parts->implode("\n\n"), 'reason' => 'answered'];
     }
 
     /**

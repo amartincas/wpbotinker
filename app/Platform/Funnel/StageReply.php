@@ -10,10 +10,20 @@ namespace App\Platform\Funnel;
  */
 final class StageReply
 {
+    /** What the message asks about the product, as a purchase. */
+    public const QUESTION_COMMERCIAL = 'comercial';
+
+    /** What the message asks of the service's subject itself. */
+    public const QUESTION_CONTENT = 'contenido';
+
+    /**
+     * @param  string|null  $question  how the model read the message after the free replies: one of the QUESTION_ values, or null
+     */
     private function __construct(
         public readonly ?string $reply,
         public readonly ?string $intent,
         public readonly float $confidence,
+        public readonly ?string $question = null,
     ) {}
 
     /**
@@ -39,8 +49,11 @@ final class StageReply
         $intent = $decoded['intent'] ?? null;
         $known = is_string($intent) && isset($intents[$intent]);
         $confidence = is_numeric($decoded['confidence'] ?? null) ? max(0.0, min(1.0, (float) $decoded['confidence'])) : 0.0;
+        // "Contenido" or " contenido " still says content: never read as no question.
+        $question = is_string($decoded['question'] ?? null) ? mb_strtolower(trim($decoded['question'])) : null;
+        $question = in_array($question, [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT], true) ? $question : null;
 
-        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0);
+        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question);
     }
 
     public static function none(): self

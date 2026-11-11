@@ -119,8 +119,13 @@ return [
                 .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción. '
                 .'Después del reconocimiento, cada frase debe hablar del servicio (por esa palabra o por el nombre del producto), la suscripción o los planes, no del tema que pregunta. '
                 .'No des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista; no uses listas ni frases entre comillas; no inventes importes, beneficios ni condiciones. '
-                .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null.',
+                .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null. '
+                .'Añade al JSON el campo "question": "comercial" si su último mensaje pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes) o decide comprar; '
+                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); null si no está claro.',
             'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
+
+            // After the free replies, a commercial question that no verbatim commercial resource answers.
+            'undocumented_reply' => 'No tengo información confirmada sobre esa condición específica y prefiero no darte una respuesta incorrecta. Si quieres, puedes consultar los planes disponibles para conocer las condiciones del servicio.',
 
             // Model calls after the free replies, per conversation and product.
             'after_limit_reads' => 5,
