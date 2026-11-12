@@ -294,14 +294,18 @@ describe('a tapped plan', function () {
             ->and(Subscription::count())->toBe(0);
     });
 
-    it('starts one payment however many times it is tapped, and keeps the first plan chosen', function () {
+    it('starts one payment however many times it is tapped, and changes it to another plan tapped next', function () {
         pbSay('Semanal', 'plan:'.$this->weekly->id);
         pbSay('Semanal', 'plan:'.$this->weekly->id);
+
+        expect(Payment::count())->toBe(1)->and(Payment::sole()->plan_id)->toBe($this->weekly->id);
+
         pbSay('Mensual', 'plan:'.$this->monthly->id);
 
-        expect(Payment::count())->toBe(1)
-            ->and(Payment::sole()->plan_id)->toBe($this->weekly->id)
-            ->and(pbText(pbLast()))->toContain('plan Semanal');
+        expect(Payment::count())->toBe(2)
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_id)->toBe($this->monthly->id)
+            ->and(Payment::where('plan_id', $this->weekly->id)->sole()->status)->toBe(Payment::STATUS_EXPIRED)
+            ->and(pbText(pbLast()))->toContain('plan Mensual');
     });
 
     it('starts no payment for a plan that no longer fits: it asks again, with the current plans', function (Closure $stale) {

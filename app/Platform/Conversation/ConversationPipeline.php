@@ -552,6 +552,8 @@ class ConversationPipeline
                         $messageBody,
                         $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true),
                         $this->history($store, $from, $domain->key()),
+                        // The shape of the answer, where the provider supports it; its values are still validated.
+                        StageReply::schema($step->definition->intents),
                     );
                     $this->rememberSample($store, $turnKey, $raw);
                 }
@@ -569,12 +571,25 @@ class ConversationPipeline
         $content = $reply?->question === StageReply::QUESTION_CONTENT;
         // A greeting or a thanks, as the model read it, or plainly one when the model did not read it.
         $courtesy = $reply?->question === StageReply::QUESTION_COURTESY || ($reply?->question === null && GuidedFunnel::isCourtesy($messageBody));
+        // A refusal, frustration or anger: answered calmly like a courtesy, never with the plans nor a payment.
+        $declined = $reply?->question === StageReply::QUESTION_DECLINE;
+
+        if ($declined) {
+            // Not now: this episode gets no reactivation. Not an opt-out, and never a reason for this turn to fail.
+            try {
+                GuidedFunnel::declineEpisode($conversation);
+            } catch (Throwable $e) {
+                Log::warning('REACTIVATION_DECLINE_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
+            }
+        }
         // With a payment open, its own short reminder stands for the plans: the customer already chose one.
         $payment = $access->openPayment;
         $read = ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply?->intent, 'confidence' => $reply?->confidence, 'question' => $reply?->question, 'action_rejected' => $rejected, 'free_available' => $free, 'read' => $readKind];
+        // How the model answered, never its words: kept last so the fields above stay in their order.
+        $shape = ['question_field' => $reply?->questionField, 'reply_characters' => $reply?->reply !== null ? mb_strlen($reply->reply) : 0];
 
         if ($action === FunnelDefinition::ACTION_START_PAYMENT) {
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null]);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => null] + $shape);
             $this->deliverPurchase($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step->definition, true, $outcome->nextStage, $outcome->interactions);
             $this->forgetSample($store, $turnKey);
 
@@ -593,7 +608,7 @@ class ConversationPipeline
                 default => $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true),
             };
 
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => $argumentViolation, 'offer_repeated' => $repeated]);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => $argumentViolation, 'offer_repeated' => $repeated] + $shape);
 
             if ($argument !== null) {
                 $this->observeClaims($store, $domain, $product, $step, $argument, $wamid);
@@ -610,7 +625,7 @@ class ConversationPipeline
         // Only a request for content is the free reply, while the customer has one. A message the
         // model did not read (no reads left, or it failed) never gets one by default.
         if ($free && $content) {
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => null, 'free_reply' => true]);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => null, 'free_reply' => true] + $shape);
             $this->funnels->releaseLimitRead($conversation, $product, $wamid, $readKind);
 
             $this->converse($store, $conversation, $from, $messageBody, $query, $customer, $product, $domain, $funnel, FunnelStep::converse($step->definition, $step->stage, $step->interactions, true), $access, $wamid);
@@ -629,12 +644,12 @@ class ConversationPipeline
             $reply?->reply === null => 'empty',
             $freeWording => $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases),
             // A courtesy is answered as one: short and giving nothing, but with no invitation to the plans.
-            $courtesy => $this->claims->courtesyReplyViolation($reply->reply, $product->name, (array) $product->aliases),
+            $courtesy || $declined => $this->claims->courtesyReplyViolation($reply->reply, $product->name, (array) $product->aliases),
             default => $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases),
         };
 
         if ($outcome !== null) {
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literal['reason'] ?? null]);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literal['reason'] ?? null] + $shape);
         } elseif (! $canRead) {
             Log::info('FUNNEL_LIMIT_READS_EXHAUSTED', ['store_id' => $store->id, 'product_id' => $product->id]);
         }
@@ -654,9 +669,14 @@ class ConversationPipeline
         $text = match (true) {
             $literalReason === 'answered' => $answered($literal['text']),
             $literalReason === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
-            $courtesy && $sendsWording => $reply->reply,
+            ($courtesy || $declined) && $sendsWording => $reply->reply,
             $courtesy => trim((string) config('botinker.sales_funnels.guided.courtesy_reply')),
+            $declined => trim((string) config('botinker.sales_funnels.guided.decline_reply')),
             $sendsWording => $answered($reply->reply),
+            // A message the model read but did not classify, while a free reply is left: an invitation to say
+            // more, neither the plans nor content, and the free reply stays. A message no read was left for is
+            // not invited to say more, as nothing would read it. Without a free reply, the limit as always.
+            $free && $canRead && ! $commercial => GuidedFunnel::unclassifiedReply($funnel->definition ?? []) ?? trim((string) config('botinker.sales_funnels.guided.unclassified_reply')),
             // The fixed reply says the free replies are over only when they are.
             $free => $offer(),
             default => trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$offer(),

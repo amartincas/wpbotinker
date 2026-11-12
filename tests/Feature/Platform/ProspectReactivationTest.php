@@ -27,6 +27,7 @@ use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelVersions;
 use Illuminate\Http\Client\Request;
 use Illuminate\Queue\SyncQueue;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -40,15 +41,19 @@ const RX_MESSAGE = 'MENSAJE-DE-REACTIVACION';
 beforeEach(function () {
     $this->freezeSecond();
     Queue::fake([SendProspectReactivation::class]);
+    // These tests are about everything but the quiet hours: a window of the whole day keeps them independent of the
+    // hour they run at. The quiet hours have their own tests below, with the configured window.
+    config(['botinker.sales_funnels.guided.reactivation_window' => ['timezone' => 'America/Bogota', 'from' => '00:00', 'until' => '24:00']]);
 
     $this->modelCalls = 0;
     $this->whatsAppDown = false;
+    $this->modelReply = null;
 
     Http::fake(function (Request $request) {
         if (str_contains($request->url(), 'api.openai.com')) {
             $this->modelCalls++;
 
-            return Http::response(['choices' => [['message' => ['content' => json_encode(['reply' => 'RESPUESTA-DEL-MODELO', 'intent' => null, 'confidence' => 0.0])]]]]);
+            return Http::response(['choices' => [['message' => ['content' => $this->modelReply ?? json_encode(['reply' => 'RESPUESTA-DEL-MODELO', 'intent' => null, 'confidence' => 0.0])]]]]);
         }
 
         return $this->whatsAppDown
@@ -421,6 +426,186 @@ describe('one reactivation per episode', function () {
         rxRun($job);
 
         expect(rxReactivations())->toBe(1);
+    });
+});
+
+describe('a refusal read by the commercial turn', function () {
+    beforeEach(function () {
+        // How the model reads a refusal or frustration that is not one of the configured phrases.
+        $this->refusal = json_encode(['reply' => 'Entiendo, aquí estaré si quieres retomarlo.', 'intent' => null, 'confidence' => 0.0, 'question' => 'rechazo']);
+    });
+
+    it('ends the episode with no reactivation, even for the job queued after it, and is no opt-out', function () {
+        Log::spy();
+        $this->modelReply = $this->refusal;
+
+        rxSay('Qué rabia, esto no me sirve para nada');
+        $job = rxLastJob();
+        $this->travel(2)->hours();
+
+        rxRun($job);
+
+        expect(rxReactivations())->toBe(0)
+            ->and(rxConversation()->reactivation_opted_out_at)->toBeNull()
+            ->and(rxConversation()->reactivation_episode_at)->toBeNull();
+        rxSkipped('declined_episode');
+    });
+
+    it('lets the customer write again: a new episode, reactivated as usual', function () {
+        $this->modelReply = $this->refusal;
+        rxSay('Qué rabia, esto no me sirve para nada');
+        $declined = rxLastJob();
+        $this->travel(1)->hours();
+
+        $this->modelReply = null;
+        rxSay('Bueno, ¿y cómo funciona?');
+        $again = rxLastJob();
+        $this->travel(2)->hours();
+
+        rxRun($declined);
+        rxRun($again);
+
+        expect($again->episode)->not->toBe($declined->episode)
+            ->and(rxReactivations())->toBe(1)
+            ->and(rxConversation()->reactivation_opted_out_at)->toBeNull();
+    });
+
+    it('keeps the explicit stop request as the only opt-out for good', function () {
+        rxSay('No me escribas más');
+        $job = rxLastJob();
+        $this->travel(2)->hours();
+
+        rxRun($job);
+
+        expect(rxReactivations())->toBe(0)->and(rxConversation()->reactivation_opted_out_at)->not->toBeNull();
+
+        $this->modelReply = $this->refusal;
+        rxSay('Qué fastidio');
+
+        expect(rxConversation()->reactivation_opted_out_at)->not->toBeNull();
+    });
+
+    it('marks nothing when the model reads no refusal', function () {
+        rxSay('Hola, quiero saber más');
+        $job = rxLastJob();
+        $this->travel(2)->hours();
+
+        rxRun($job);
+
+        expect(rxReactivations())->toBe(1);
+    });
+});
+
+describe('the quiet hours', function () {
+    beforeEach(function () {
+        config(['botinker.sales_funnels.guided.reactivation_window' => ['timezone' => 'America/Bogota', 'from' => '08:00', 'until' => '22:00']]);
+        // A moment given in Bogotá's time, as the application keeps it (UTC).
+        $this->bogota = fn (string $at) => Carbon::parse($at, 'America/Bogota')->setTimezone(config('app.timezone'));
+    });
+
+    it('keeps a time within the window and moves one outside it to the next opening, in Bogotá\'s time', function (string $due, string $expected) {
+        $allowed = SendProspectReactivation::allowedAt(($this->bogota)($due));
+
+        expect($allowed->getTimezone()->getName())->toBe('UTC')
+            ->and($allowed->equalTo(($this->bogota)($expected)))->toBeTrue();
+    })->with([
+        'a las 09:00 se conserva' => ['2026-11-12 09:00:00', '2026-11-12 09:00:00'],
+        'a las 08:00 en punto se conserva' => ['2026-11-12 08:00:00', '2026-11-12 08:00:00'],
+        'a las 21:59 se conserva' => ['2026-11-12 21:59:00', '2026-11-12 21:59:00'],
+        'a las 06:00 pasa a las 08:00 del mismo día' => ['2026-11-12 06:00:00', '2026-11-12 08:00:00'],
+        'a las 22:00 en punto pasa a las 08:00 siguientes' => ['2026-11-12 22:00:00', '2026-11-13 08:00:00'],
+        'a las 22:30 pasa a las 08:00 siguientes' => ['2026-11-12 22:30:00', '2026-11-13 08:00:00'],
+        'a la medianoche pasa a las 08:00 del mismo día' => ['2026-11-13 00:00:00', '2026-11-13 08:00:00'],
+    ]);
+
+    it('converts between UTC and Bogotá without shifting twice', function () {
+        // 03:30 UTC is 22:30 of the day before in Bogotá (UTC-5): its next opening is 08:00 there, 13:00 UTC.
+        $allowed = SendProspectReactivation::allowedAt(Carbon::parse('2026-11-13 03:30:00', 'UTC'));
+
+        expect($allowed->format('Y-m-d H:i:s e'))->toBe('2026-11-13 13:00:00 UTC');
+    });
+
+    it('queues the reactivation at its configured hours when they end within the window', function () {
+        $this->travelTo(($this->bogota)('2026-11-12 10:00:00'));
+
+        rxSay('Hola, quiero saber más');
+
+        expect(rxLastJob()->delay->equalTo(($this->bogota)('2026-11-12 12:00:00')))->toBeTrue();
+    });
+
+    it('queues one due at 22:30 for 08:00 the next day, and sends it then', function () {
+        $this->travelTo(($this->bogota)('2026-11-12 20:30:00'));
+        rxSay('Hola, quiero saber más');
+        $job = rxLastJob();
+
+        expect($job->delay->equalTo(($this->bogota)('2026-11-13 08:00:00')))->toBeTrue();
+
+        $this->travelTo(($this->bogota)('2026-11-13 08:00:00'));
+        rxRun($job);
+
+        expect(rxReactivations())->toBe(1);
+    });
+
+    it('never sends during the quiet hours when a job runs late: once more at the opening, then nothing', function () {
+        $this->travelTo(($this->bogota)('2026-11-12 19:00:00'));
+        rxSay('Hola, quiero saber más');
+        $job = rxLastJob();
+
+        // Due at 21:00, but the worker only takes it at 23:15.
+        $this->travelTo(($this->bogota)('2026-11-12 23:15:00'));
+        rxRun($job);
+        $again = rxLastJob();
+
+        expect(rxReactivations())->toBe(0)
+            ->and($again->rescheduled)->toBeTrue()
+            ->and($again->delay->equalTo(($this->bogota)('2026-11-13 08:00:00')))->toBeTrue();
+
+        // Taken again during the quiet hours, as a retry would be: still nothing.
+        Log::spy();
+        $this->travelTo(($this->bogota)('2026-11-13 02:00:00'));
+        rxRun($again);
+
+        expect(rxReactivations())->toBe(0)->and(rxJobs())->toHaveCount(2);
+        rxSkipped('quiet_hours');
+    });
+
+    it('drops a deferred reactivation when the customer writes before the opening', function () {
+        $this->travelTo(($this->bogota)('2026-11-12 21:00:00'));
+        rxSay('Hola, quiero saber más');
+        $deferred = rxLastJob();
+
+        $this->travelTo(($this->bogota)('2026-11-13 07:30:00'));
+        rxSay('¿Sigues ahí?');
+
+        Log::spy();
+        $this->travelTo(($this->bogota)('2026-11-13 08:00:00'));
+        rxRun($deferred);
+
+        expect(rxReactivations())->toBe(0);
+        rxSkipped('newer_message');
+    });
+
+    it('still sends nothing to a prospect with a payment open, and once for several jobs of an episode', function () {
+        $this->travelTo(($this->bogota)('2026-11-12 21:00:00'));
+        rxSay('Hola, quiero saber más');
+        $job = rxLastJob();
+        $this->travelTo(($this->bogota)('2026-11-13 08:00:00'));
+
+        rxRun(clone $job);
+        rxRun(clone $job);
+
+        expect(rxReactivations())->toBe(1);
+
+        $this->travelTo(($this->bogota)('2026-11-13 09:00:00'));
+        rxSay('Quiero pagar el semanal');
+        $paying = rxLastJob();
+        $this->travelTo(($this->bogota)('2026-11-13 12:00:00'));
+
+        Log::spy();
+        rxRun($paying);
+
+        expect(rxReactivations())->toBe(1)->and(Payment::count())->toBe(1);
+        rxSkipped('open_payment');
     });
 });
 

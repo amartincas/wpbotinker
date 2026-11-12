@@ -69,9 +69,29 @@ beforeEach(function () {
     $this->modelDown = false;
     $this->selectorDown = false;
     $this->whatsAppDown = false;
+    $this->schemaRefused = false;
+    $this->transcriptions = [];
 
     Http::fake(function (Request $request) {
+        // A voice note: its media, its file and its transcription.
+        if (str_contains($request->url(), 'api.openai.com/v1/audio/transcriptions')) {
+            return Http::response(['text' => array_shift($this->transcriptions) ?? 'AUDIO-SIN-TEXTO']);
+        }
+
+        if (str_starts_with($request->url(), 'https://graph.facebook.com/v20.0/media-')) {
+            return Http::response(['url' => 'https://lookaside.fbsbx.com/'.basename($request->url())]);
+        }
+
+        if (str_starts_with($request->url(), 'https://lookaside.fbsbx.com/')) {
+            return Http::response('OggS-audio', 200, ['Content-Type' => 'audio/ogg']);
+        }
+
         if (str_contains($request->url(), 'api.openai.com')) {
+            // A model without Structured Outputs refuses the request that carries a schema.
+            if ($this->schemaRefused && isset($request->data()['response_format'])) {
+                return Http::response(['error' => ['code' => 'invalid_request_error']], 400);
+            }
+
             $system = $request->data()['messages'][0]['content'];
             $this->chats[] = $request->data()['messages'];
 
@@ -967,7 +987,7 @@ describe('the question after the limit', function () {
 
         gfSay('¿Cómo le hablo a una chica en un bar?');
 
-        expect(gfLastTurnPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1, "question": "comercial" o "contenido" o "cortesia" o null}')
+        expect(gfLastTurnPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1, "question": "comercial" o "contenido" o "cortesia" o "rechazo" o null}')
             ->toContain('En "question" clasifica siempre su último mensaje')
             ->and(gfLastPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}')->not->toContain('"question"');
     });
@@ -1308,9 +1328,9 @@ describe('the commercial turn', function () {
         'contenido' => [gfJson('', question: 'contenido'), '¿Cómo le hablo a una chica en un bar?',
             fn ($test) => expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1)],
         'ausente' => [gfJson('Fíjate en su mirada y luego háblale.', GuidedFunnel::INTENT_OFFER, 0.9), 'Mmm, no sé',
-            fn ($test) => expect(gfLast())->toBe($test->pointer)->and(gfTurns())->toBe(0)],
+            fn ($test) => expect(gfLast())->toBe(config('botinker.sales_funnels.guided.unclassified_reply'))->and(gfTurns())->toBe(0)],
         'inválida' => ['{"reply": "Fíjate en su mirada y luego háblale.", "intent": "presentar_oferta", "confidence": 0.9, "question": "venta"}', 'Mmm, no sé',
-            fn ($test) => expect(gfLast())->toBe($test->pointer)->and(gfTurns())->toBe(0)],
+            fn ($test) => expect(gfLast())->toBe(config('botinker.sales_funnels.guided.unclassified_reply'))->and(gfTurns())->toBe(0)],
         '[Planes] y comercial' => [gfJson('Con el plan semanal empiezas hoy. [Planes]', question: 'comercial'), '¿Esto cómo funciona?',
             fn ($test) => expect(gfLast())->toStartWith('Con el plan semanal empiezas hoy.')->toContain('$9.900')->not->toMatch(StageReply::PLANS_MARKER)->and(gfTurns())->toBe(0)],
     ]);
@@ -1384,7 +1404,7 @@ describe('the commercial turn', function () {
 
         gfSay('Mmm, no sé');
 
-        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0);
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.unclassified_reply'))->and(gfTurns())->toBe(0);
     });
 
     it('reads a request for content with a grace read once the reads ran out, and gives the free reply', function () {
@@ -1424,7 +1444,7 @@ describe('the commercial turn', function () {
 
         gfSay('Mmm, no sé');
 
-        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0)->and($this->prompts)->toBe([]);
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.unclassified_reply'))->and(gfTurns())->toBe(0)->and($this->prompts)->toBe([]);
     });
 
     it('reads nothing with grace once the free replies are over', function () {
@@ -1563,7 +1583,7 @@ describe('the commercial turn', function () {
 
         gfSay('¿Cómo le hablo a una chica en un bar?');
 
-        expect(gfLast())->toBe($this->pointer)->and(gfTurns())->toBe(0);
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.unclassified_reply'))->and(gfTurns())->toBe(0);
     });
 
     it('closes the free reply with how to ask for the plans when they were just shown, not with them again', function () {
@@ -1806,9 +1826,13 @@ describe('a static opening and the conversation after it', function () {
         gfSay('Sí, lo quiero ya');
         expect(gfLast())->toContain('INSTRUCCIONES-PAGO');
 
+        expect(Payment::count())->toBe(1)->and(Payment::sole()->id)->toBe($payment->id)->and(Payment::sole()->plan_name)->toBe('Semanal');
+
+        // Another plan named: the pending one gives way, untouched, and there is still one open payment.
         gfSay('Quiero el mensual');
 
-        expect(Payment::count())->toBe(1)->and(Payment::sole()->id)->toBe($payment->id)->and(Payment::sole()->plan_name)->toBe('Semanal')
+        expect(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_name)->toBe('Mensual')
+            ->and($payment->fresh()->status)->toBe(Payment::STATUS_EXPIRED)->and((float) $payment->fresh()->amount)->toBe(9900.0)
             ->and(Subscription::count())->toBe(0);
     });
 
@@ -1835,6 +1859,304 @@ describe('a static opening and the conversation after it', function () {
         gfSay('Tengo una duda');
 
         expect(gfLast())->toContain('INSTRUCCIONES-PAGO')->and(count($this->turnPrompts) + count($this->prompts))->toBe($calls);
+    });
+});
+
+describe('a message the model did not classify', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->neutral = config('botinker.sales_funnels.guided.unclassified_reply');
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+    });
+
+    it('asks the model to understand misspelled, colloquial or incomplete messages within the same call', function () {
+        $this->turns = [gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('RESPUESTA-A-SU-DIFICULTAD')];
+
+        gfSay('Mujer difisil');
+
+        expect(gfLastTurnPrompt())->toContain('errores de ortografía, abreviaciones, expresiones coloquiales o esté incompleto')
+            ->toContain('sin corregirlo, sin comentar sus errores y sin inventar detalles que no dijo')
+            ->toContain('también cuando solo describe en pocas palabras una situación o dificultad personal')
+            ->and($this->turnPrompts)->toHaveCount(1);
+    });
+
+    it('gives the free reply to a misspelled difficulty read as content, never an offer', function (string $message) {
+        $this->turns = [gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('RESPUESTA-A-SU-DIFICULTAD')];
+
+        gfSay($message);
+
+        expect(gfLast())->toStartWith('RESPUESTA-A-SU-DIFICULTAD')->not->toContain($this->pointer)
+            ->and(gfTurns())->toBe(1)->and(Payment::count())->toBe(0);
+    })->with(['Mujer difisil', 'Quiero tener nv', 'No me ase caso', 'No se como ablarle', 'Me ignora muxo', 'Es mui fria']);
+
+    it('answers a message it did not classify with the neutral reply: no plans, no content, and the free reply stays', function (string $turn) {
+        $this->turns = [$turn];
+
+        gfSay('Mujer difisil');
+
+        expect(gfLast())->toBe($this->neutral)->not->toContain('$9.900')->not->toContain('mirada')
+            ->and(gfTurns())->toBe(0)->and(gfReads())->toBe(1)
+            ->and(SampleDelivery::count())->toBe(0)->and(Payment::count())->toBe(0);
+    })->with([
+        // The case seen in production: unclassified, and too long for an unclassified reply.
+        'demasiado larga' => [gfJson(str_repeat('Te entiendo, cada situación es distinta y vale la pena verla con calma. ', 8))],
+        'con contenido' => [gfJson('Fíjate en su mirada y luego háblale.')],
+        'pide aclarar a su manera' => [gfJson('¿Me cuentas un poco más de lo que pasó con ella?')],
+        'campo vacío' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0, "question": null}'],
+    ]);
+
+    it('lets the customer say more after the neutral reply and then gives the free reply', function () {
+        $this->turns = [gfJson('Fíjate en su mirada.'), gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('RESPUESTA-A-SU-DIFICULTAD')];
+
+        gfSay('Ella...');
+        expect(gfLast())->toBe($this->neutral);
+
+        gfSay('Me gusta una compañera y no sé cómo hablarle');
+
+        expect(gfLast())->toStartWith('RESPUESTA-A-SU-DIFICULTAD')->and(gfTurns())->toBe(1);
+    });
+
+    it('uses the neutral reply each guided funnel configures, else the generic one', function () {
+        $this->versions->publish($this->product, GuidedFunnel::definition('INSTRUCCION-DEL-ADMINISTRADOR', 1, null, 2, '¿Me cuentas un poco más para orientarte?'));
+        $this->turns = [gfJson('Fíjate en su mirada.')];
+
+        gfSay('Ella...');
+
+        expect(gfLast())->toBe('¿Me cuentas un poco más para orientarte?')
+            ->and(GuidedFunnel::unclassifiedReply(GuidedFunnel::definition('I', 1)))->toBeNull()
+            ->and(fn () => FunnelDefinition::fromArray(GuidedFunnel::definition('I', 1, null, 2, str_repeat('x', GuidedFunnel::MAX_UNCLASSIFIED_REPLY_LENGTH + 1))))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => FunnelDefinition::fromArray(['name' => 'N', 'goal' => 'G', 'unclassified_reply' => 'X', 'stages' => [['key' => 'a', 'type' => 'ai', 'goal' => 'g', 'instructions' => 'i']]]))->toThrow(InvalidArgumentException::class);
+    });
+
+    it('publishes the neutral reply from the guided funnel\'s editor', function () {
+        $this->actingAs(User::factory()->create(['store_id' => $this->store->id, 'is_super_admin' => false]));
+
+        gfPage()
+            ->fillForm(['instructions' => 'Vende con calma.', 'free_replies' => 2, 'unclassified_reply' => '  Cuéntame más, por favor.  '])
+            ->callAction('publish', data: ['confirmed' => true])
+            ->assertHasNoActionErrors();
+
+        expect(GuidedFunnel::unclassifiedReply($this->product->fresh()->activeFunnel()->definition))->toBe('Cuéntame más, por favor.');
+    });
+
+    it('keeps the limit as it was once the free replies are spent', function () {
+        $this->replies = [gfJson('RESPUESTA-A-SU-DIFICULTAD')];
+        $this->turns = [gfJson('', question: 'contenido'), gfJson('Fíjate en su mirada.')];
+        gfSay('Mujer difisil');
+
+        gfSay('Ella...');
+
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->not->toBe($this->neutral)->not->toContain('mirada')->and(gfTurns())->toBe(1);
+    });
+
+    it('does not invite to say more when no read was left to read it', function () {
+        gfSpendReads();
+        $this->travel(25)->hours();
+        $this->turns = [gfJson('Te acompaño por WhatsApp.', question: 'comercial')];
+        gfSay('¿Esto cómo funciona?');
+
+        gfSay('Ella...');
+
+        expect(gfLast())->not->toBe($this->neutral)->and(gfTurns())->toBe(0);
+    });
+
+    it('logs how the answer carried the question, without its words', function (string $turn, string $field, ?string $question) {
+        Log::spy();
+        $this->turns = [$turn];
+
+        gfSay('Mmm');
+
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['question_field'] === $field && $context['question'] === $question
+            && is_int($context['reply_characters'])
+            && array_slice(array_keys($context), -2) === ['question_field', 'reply_characters']
+            && ! in_array('Te entiendo.', $context, true)));
+    })->with([
+        'ausente' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0}', StageReply::FIELD_ABSENT, null],
+        'vacío' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0, "question": null}', StageReply::FIELD_EMPTY, null],
+        'en blanco' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0, "question": " "}', StageReply::FIELD_EMPTY, null],
+        'inválido' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0, "question": "venta"}', StageReply::FIELD_INVALID, null],
+        'válido' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0, "question": "cortesia"}', StageReply::FIELD_VALID, 'cortesia'],
+    ]);
+});
+
+describe('a payment open: another plan, voice notes and refusals', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->weekly = Plan::where('name', 'Semanal')->value('id');
+        $this->monthly = Plan::where('name', 'Mensual')->value('id');
+        // The plan's reply button, as WhatsApp sends it.
+        $this->tap = fn (int $plan, string $title, string $wamid = '') => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, $title, $wamid ?: 'wamid.in.'.Str::random(10), 'interactive', null, null, null, 'plan:'.$plan);
+        $this->voice = function (string $transcription) {
+            $this->transcriptions[] = $transcription;
+            ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, null, 'wamid.in.'.Str::random(10), 'audio', 'media-'.Str::random(6));
+            $this->travel(1)->seconds();
+        };
+        // The plans shown, as the opening shows them: the conversation is about this product.
+        gfSay('Planes');
+    });
+
+    it('changes a pending payment to the plan chosen next: the first expires untouched, one open payment, never two', function () {
+        Log::spy();
+        ($this->tap)($this->weekly, 'Semanal');
+        ($this->tap)($this->monthly, 'Mensual');
+
+        $first = Payment::orderBy('id')->first();
+        $second = Payment::orderBy('id')->get()->last();
+
+        expect(Payment::count())->toBe(2)
+            ->and($first->status)->toBe(Payment::STATUS_EXPIRED)->and($first->plan_name)->toBe('Semanal')->and((float) $first->amount)->toBe(9900.0)
+            ->and($second->status)->toBe(Payment::STATUS_PENDING)->and($second->plan_name)->toBe('Mensual')->and((float) $second->amount)->toBe(19900.0)
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->count())->toBe(1)
+            ->and(gfLast())->toStartWith('Listo, cambiamos tu pago al plan Mensual.')->toContain('$19.900 COP por 30 días')->toContain('INSTRUCCIONES-PAGO')->not->toContain('$9.900')
+            ->and(Subscription::count())->toBe(0);
+        Log::shouldHaveReceived('info')->with('PAYMENT_PLAN_CHANGED', Mockery::on(fn (array $context) => $context['expired_payment_id'] === $first->id && $context['plan_id'] === $this->monthly));
+    });
+
+    it('also changes it when the customer writes the other plan\'s name', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+
+        gfSay('Mensual');
+
+        expect(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_name)->toBe('Mensual')
+            ->and(Payment::where('plan_name', 'Semanal')->sole()->status)->toBe(Payment::STATUS_EXPIRED);
+    });
+
+    it('keeps the payment for the same plan chosen again, or the same message retried, with no second one', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+        ($this->tap)($this->weekly, 'Semanal');
+        ($this->tap)($this->monthly, 'Mensual', 'wamid.mensual');
+        ($this->tap)($this->monthly, 'Mensual', 'wamid.mensual');
+
+        expect(Payment::count())->toBe(2)->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_name)->toBe('Mensual')
+            ->and(gfLast())->toStartWith('Pago de «Asesor», plan Mensual');
+    });
+
+    it('never changes a payment a receipt was already sent for', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+        Payment::sole()->update(['status' => Payment::STATUS_UNDER_REVIEW, 'receipt_submitted_at' => now()]);
+
+        ($this->tap)($this->monthly, 'Mensual');
+
+        expect(Payment::count())->toBe(1)->and(Payment::sole()->status)->toBe(Payment::STATUS_UNDER_REVIEW)->and(Payment::sole()->plan_name)->toBe('Semanal')
+            ->and(gfLast())->toContain('está en revisión');
+    });
+
+    it('gives the payment instructions when asked how to pay', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+
+        gfSay('¿Cómo pago?');
+
+        expect(gfLast())->toContain('INSTRUCCIONES-PAGO')->toContain('plan Semanal')->and(Payment::count())->toBe(1);
+    });
+
+    it('lets a voice note reach the model with a payment open, and answers what it says, not the payment again', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+        $this->turns = [gfJson('Te entiendo, quieres saber cómo te acompaña el servicio con tu novia.', question: 'comercial')];
+
+        ($this->voice)('Pero primero mi novia, también el número una hembra y le doy la plata.');
+
+        $chat = collect($this->chats)->last(fn (array $messages) => str_contains($messages[0]['content'], 'Este es un turno comercial'));
+
+        expect(gfLast())->toBe('Te entiendo, quieres saber cómo te acompaña el servicio con tu novia.')->not->toContain('sigue pendiente')
+            ->and(end($chat)['content'])->toBe('🎤 [AUDIO]: Pero primero mi novia, también el número una hembra y le doy la plata.')
+            ->and(WhatsAppMessage::where('role', 'user')->latest('id')->value('content'))->toStartWith('🎤 [AUDIO]: Pero primero mi novia')
+            ->and(Payment::count())->toBe(1);
+    });
+
+    it('gives the free reply to a request for content with a payment open', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+        $this->turns = [gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        ($this->voice)('¿Cómo le hablo a una chica que me gusta?');
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->and(gfTurns())->toBe(1)->and(Payment::sole()->status)->toBe(Payment::STATUS_PENDING);
+    });
+
+    it('answers a refusal or frustration calmly, with no plans and no payment reminder, and never buys on it', function (string $turn, string $expected) {
+        ($this->tap)($this->weekly, 'Semanal');
+        $this->turns = [$turn];
+
+        ($this->voice)('Vámonos, qué rabia, no sirve para nada.');
+
+        expect(gfLast())->toBe($expected)->not->toContain('sigue pendiente')->not->toContain('$9.900')->not->toContain('INSTRUCCIONES-PAGO')
+            ->and(Payment::count())->toBe(1)->and(Subscription::count())->toBe(0);
+    })->with([
+        'su respuesta' => [gfJson('Entiendo tu molestia. Aquí estaré si quieres retomarlo.', question: 'rechazo'), 'Entiendo tu molestia. Aquí estaré si quieres retomarlo.'],
+        'una respuesta que no puede salir' => [gfJson("Tranquilo, prueba esto:\n- Respira", GuidedFunnel::INTENT_BUY, 0.99, 'rechazo'), 'Entiendo. Si en otro momento quieres retomarlo, aquí estaré.'],
+    ]);
+
+    it('does not repeat the payment reminder to whatever comes in', function () {
+        ($this->tap)($this->weekly, 'Semanal');
+        $this->turns = [
+            gfJson('Fíjate en su mirada.'),
+            gfJson('Con gusto.', question: 'cortesia'),
+            gfJson('Entiendo, aquí estaré.', question: 'rechazo'),
+        ];
+
+        foreach (['Mmm ella', 'Gracias', 'Qué fastidio'] as $message) {
+            gfSay($message);
+
+            expect(gfLast())->not->toContain('sigue pendiente')->not->toContain('INSTRUCCIONES-PAGO');
+        }
+
+        expect(Payment::count())->toBe(1)->and(Payment::sole()->status)->toBe(Payment::STATUS_PENDING)->and(gfTurns())->toBe(0);
+    });
+});
+
+describe('the structured answer of the commercial turn', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->openAi = fn (string $marker) => collect(Http::recorded(fn (Request $request) => str_contains($request->url(), 'api.openai.com')
+            && str_contains($request->data()['messages'][0]['content'], $marker)))->map(fn ($pair) => $pair[0]->data())->values();
+    });
+
+    it('asks for its JSON schema: every field required, the intent among the funnel\'s and the question among the readings, or null', function () {
+        $this->turns = [gfJson('', question: 'contenido')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        $format = ($this->openAi)('Este es un turno comercial')->sole()['response_format'];
+        $schema = $format['json_schema']['schema'];
+
+        expect($format['type'])->toBe('json_schema')->and($format['json_schema']['strict'])->toBeTrue()
+            ->and($schema['required'])->toBe(['reply', 'intent', 'confidence', 'question'])
+            ->and($schema['additionalProperties'])->toBeFalse()
+            ->and($schema['properties']['question']['anyOf'])->toBe([['type' => 'string', 'enum' => ['comercial', 'contenido', 'cortesia', 'rechazo']], ['type' => 'null']])
+            ->and($schema['properties']['intent']['anyOf'][0]['enum'])->toBe([GuidedFunnel::INTENT_BUY, GuidedFunnel::INTENT_OFFER]);
+    });
+
+    it('never forces JSON on a call that expects free text', function () {
+        $this->turns = [gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+
+        $others = collect(Http::recorded(fn (Request $request) => str_contains($request->url(), 'api.openai.com')
+            && ! str_contains($request->data()['messages'][0]['content'], 'Este es un turno comercial')));
+
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')
+            ->and($others)->not->toBeEmpty()
+            ->and($others->contains(fn ($pair) => isset($pair[0]->data()['response_format'])))->toBeFalse();
+    });
+
+    it('asks once more without the schema when the model refuses it, and still answers', function () {
+        Log::spy();
+        $this->schemaRefused = true;
+        $this->turns = [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial')];
+
+        gfSay('¿Esto cómo funciona?');
+
+        $calls = ($this->openAi)('Este es un turno comercial');
+
+        expect(gfLast())->toStartWith('Te acompaño por WhatsApp durante tu suscripción.')
+            ->and($calls)->toHaveCount(2)
+            ->and(isset($calls[0]['response_format']))->toBeTrue()
+            ->and(isset($calls[1]['response_format']))->toBeFalse();
+        Log::shouldHaveReceived('warning')->with('AI_SCHEMA_REFUSED', Mockery::on(fn (array $context) => $context['schema'] === 'commercial_turn'));
     });
 });
 

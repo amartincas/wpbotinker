@@ -21,6 +21,7 @@ use App\Platform\Commerce\ReceiptIntake;
 use App\Platform\Memory\CustomerMemory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -68,6 +69,8 @@ function rrFakeHttp(ArrayObject $fake): void
         return match (true) {
             str_starts_with($url, 'https://api.openai.com/') && str_contains($request->body(), 'image_url') => Http::response(['choices' => [['message' => ['content' => $fake['ocr']]]]], $fake['ocr_status']),
             str_starts_with($url, 'https://api.openai.com/') => Http::response(['choices' => [['message' => ['content' => 'Respuesta del servicio.']]]]),
+            // WhatsApp no longer keeps the media (its window to download it is over).
+            str_starts_with($url, 'https://graph.facebook.com/v20.0/media-') && isset($fake['media_gone']) => Http::response(['error' => 'gone'], 404),
             str_starts_with($url, 'https://graph.facebook.com/v20.0/media-') => Http::response(['url' => 'https://lookaside.fbsbx.com/'.basename($url)]),
             str_starts_with($url, 'https://lookaside.fbsbx.com/') => Http::response('IMAGE-BYTES-'.basename($url), 200, ['Content-Type' => 'image/jpeg']),
             str_ends_with($url, '/media') => Http::response(['id' => 'upload.'.Str::random(6)]),
@@ -437,5 +440,286 @@ describe('C5 — admin decision by WhatsApp', function () {
 
         $sends = Http::recorded(fn (Request $r) => str_ends_with($r->url(), '/messages'));
         expect($sends->every(fn ($pair) => $pair[0]->url() === "https://graph.facebook.com/v20.0/{$this->store->wa_phone_number_id}/messages"))->toBeTrue();
+    });
+});
+
+describe('receipts after a plan change', function () {
+    beforeEach(function () {
+        $this->weekly = Plan::create(['product_id' => $this->product->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+        $this->first = rrStart($this->customer, $this->weekly);
+        // The customer chooses the other plan with this payment pending and no receipt.
+        rrText($this->store, 'Quiero comprar el plan mensual', RR_CUSTOMER);
+        $this->second = Payment::whereIn('status', Payment::OPEN_STATUSES)->sole();
+        $this->ocr = fn (?float $amount) => $this->fake['ocr'] = json_encode(['amount' => $amount, 'date' => now()->format('d/m/Y'), 'time' => '10:00', 'reference' => 'AB-123', 'entity' => 'Nequi', 'payer_name' => 'Ana Pérez', 'uncertain' => false]);
+        $this->unmatched = fn () => collect(rrTextsTo(RR_ADMIN))->filter(fn ($text) => str_starts_with($text, '🧾 Comprobante sin asociar'))->values();
+        $this->reasons = [];
+        Event::listen(MessageLogged::class, function (MessageLogged $event) {
+            if ($event->message === 'RECEIPT_UNMATCHED') {
+                $this->reasons[] = $event->context['reason'];
+            }
+        });
+    });
+
+    it('replaces the pending payment: the first expires as it was, the new plan\'s opens, never two', function () {
+        $first = $this->first->fresh();
+
+        expect($first->status)->toBe(Payment::STATUS_EXPIRED)->and($first->wasReplaced())->toBeTrue()
+            ->and((float) $first->amount)->toBe(8000.0)->and($first->currency)->toBe('COP')->and($first->plan_name)->toBe('Semanal')
+            ->and($this->second->plan_name)->toBe('Mensual')->and($this->second->status)->toBe(Payment::STATUS_PENDING)
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->count())->toBe(1);
+    });
+
+    it('brings back the replaced payment its receipt pays, closes the new one, and the admin confirms it as always', function () {
+        ($this->ocr)(8000);
+
+        rrImage($this->store, 'media-1');
+
+        expect($this->first->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_EXPIRED)
+            ->and(PaymentReceipt::sole()->payment_id)->toBe($this->first->id)
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->count())->toBe(1)
+            ->and(rrTextsTo(RR_ADMIN)[0])->toContain("P-{$this->first->id}")->toContain('plan Semanal')
+            ->and(Subscription::count())->toBe(0);
+
+        rrText($this->store, "Sí P-{$this->first->id}");
+
+        expect($this->first->fresh()->status)->toBe(Payment::STATUS_CONFIRMED)
+            ->and(Subscription::sole()->expires_at->equalTo(now()->addDays(7)))->toBeTrue()
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_EXPIRED);
+    });
+
+    it('attaches a receipt of the new plan\'s amount to the new payment, as always', function () {
+        ($this->ocr)(20000);
+
+        rrImage($this->store, 'media-1');
+
+        expect(PaymentReceipt::sole()->payment_id)->toBe($this->second->id)
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and($this->first->fresh()->status)->toBe(Payment::STATUS_EXPIRED);
+    });
+
+    it('attaches nothing and tells the admin the real candidates when the amount is unreadable or matches none', function (?float $amount, string $reason) {
+        ($this->ocr)($amount);
+
+        rrImage($this->store, 'media-1');
+
+        expect(PaymentReceipt::count())->toBe(0)
+            ->and($this->first->fresh()->status)->toBe(Payment::STATUS_EXPIRED)->and($this->second->fresh()->status)->toBe(Payment::STATUS_PENDING)
+            ->and(Subscription::count())->toBe(0)
+            ->and(($this->unmatched)()->sole())
+            ->toContain("P-{$this->first->id} · Lectura · plan Semanal · \$8.000 COP · vencido por cambio de plan")
+            ->toContain("P-{$this->second->id} · Lectura · plan Mensual · \$20.000 COP · pending")
+            ->toContain("Tienda: {$this->store->name}")->toContain('No se asoció a ningún pago')
+            ->and(collect(rrSentTo(RR_ADMIN))->contains(fn ($data) => ($data['type'] ?? null) === 'image'))->toBeTrue()
+            ->and(rrLastTo(RR_CUSTOMER))->toContain('lo revisaremos manualmente')
+            ->and($this->reasons)->toBe([$reason])
+            ->and(Storage::disk(PaymentReceipt::DISK)->allFiles())->toBe([]);
+    })->with([
+        'valor ilegible' => [null, 'amount_unreadable'],
+        'ningún pago de ese valor' => [5000.0, 'no_amount_match'],
+    ]);
+
+    it('counts the same amount in another currency as another match: the receipt states none', function () {
+        Plan::create(['product_id' => $this->product->id, 'name' => 'Dólares', 'price' => 8000, 'currency' => 'USD', 'duration_days' => 30]);
+        rrText($this->store, 'Quiero comprar el plan dólares', RR_CUSTOMER);
+        ($this->ocr)(8000);
+
+        rrImage($this->store, 'media-1');
+
+        expect(PaymentReceipt::count())->toBe(0)
+            ->and(($this->unmatched)()->sole())->toContain('$8.000 USD')->toContain('$8.000 COP')
+            ->and($this->reasons)->toBe(['several_matches'])
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_name)->toBe('Dólares');
+    });
+
+    it('never brings back a replaced payment once the new one has a receipt', function () {
+        ($this->ocr)(20000);
+        rrImage($this->store, 'media-1');
+        ($this->ocr)(8000);
+
+        rrImage($this->store, 'media-2');
+
+        expect(PaymentReceipt::sole()->payment_id)->toBe($this->second->id)
+            ->and($this->first->fresh()->status)->toBe(Payment::STATUS_EXPIRED)
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and($this->reasons)->toBe(['open_payment_in_review']);
+    });
+
+    it('alerts the admin once when the same unmatched receipt is retried', function () {
+        ($this->ocr)(null);
+
+        rrImage($this->store, 'media-1', null, 'wamid.in.retry');
+        rrImage($this->store, 'media-1', null, 'wamid.in.retry');
+
+        expect(($this->unmatched)())->toHaveCount(1)->and(PaymentReceipt::count())->toBe(0);
+    });
+
+    it('leaves a payment that expired on its own out of it: past its window, it stays expired', function () {
+        $this->travel(49)->hours();
+
+        expect($this->first->fresh()->wasReplaced())->toBeFalse()
+            ->and(fn () => $this->first->fresh()->update(['status' => Payment::STATUS_UNDER_REVIEW]))->toThrow(InvalidArgumentException::class);
+    });
+
+    it('works the same for another store, product, currency and plans', function () {
+        $store = makeStore(['conversation_mode' => Store::MODE_KNOWLEDGE, 'payment_instructions' => 'Daviplata 3109999999', 'alert_phone' => '+57 311 000 0001']);
+        $product = rrProduct($store, 'Consultoría');
+        $basic = Plan::create(['product_id' => $product->id, 'name' => 'Básico', 'price' => 12.5, 'currency' => 'USD', 'duration_days' => 15]);
+        Plan::create(['product_id' => $product->id, 'name' => 'Premium', 'price' => 40, 'currency' => 'USD', 'duration_days' => 90]);
+        $customer = app(CustomerMemory::class)->customerFor($store, RR_CUSTOMER);
+        $first = rrStart($customer, $basic);
+        rrText($store, 'Quiero comprar el plan premium', RR_CUSTOMER);
+        ($this->ocr)(12.5);
+
+        rrImage($store, 'media-9');
+
+        expect($first->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and(PaymentReceipt::where('store_id', $store->id)->sole()->payment_id)->toBe($first->id)
+            ->and(Payment::where('customer_id', $customer->id)->where('plan_name', 'Premium')->sole()->status)->toBe(Payment::STATUS_EXPIRED);
+    });
+});
+
+describe('the admin attaching an unmatched receipt', function () {
+    beforeEach(function () {
+        $this->weekly = Plan::create(['product_id' => $this->product->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
+        $this->first = rrStart($this->customer, $this->weekly);
+        rrText($this->store, 'Quiero comprar el plan mensual', RR_CUSTOMER);
+        $this->second = Payment::whereIn('status', Payment::OPEN_STATUSES)->sole();
+        // The amount cannot be read: the receipt waits for the admin.
+        $this->fake['ocr'] = json_encode(['amount' => null, 'date' => now()->format('d/m/Y'), 'time' => '10:00', 'reference' => 'AB-123', 'entity' => 'Nequi', 'payer_name' => 'Ana Pérez', 'uncertain' => false]);
+        // The reference of each unmatched alert, in the order they went out.
+        $this->references = fn () => collect(rrTextsTo(RR_ADMIN))
+            ->filter(fn ($text) => str_starts_with($text, '🧾 Comprobante sin asociar'))
+            ->map(fn ($text) => preg_match('/\((C-[0-9A-F]{5})\)/', $text, $m) === 1 ? $m[1] : null)->values()->all();
+    });
+
+    it('attaches exactly that receipt, downloaded again, to the payment the admin names, and it is then confirmed as always', function () {
+        rrImage($this->store, 'media-7', null, 'wamid.in.unmatched');
+        [$reference] = ($this->references)();
+        $downloads = Http::recorded(fn (Request $r) => str_starts_with($r->url(), 'https://lookaside.fbsbx.com/media-7'))->count();
+
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+
+        $receipt = PaymentReceipt::sole();
+
+        expect($receipt->payment_id)->toBe($this->second->id)->and($receipt->source_wamid)->toBe('wamid.in.unmatched')
+            ->and($receipt->extracted_data)->not->toHaveKey('payer_name')
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and(Http::recorded(fn (Request $r) => str_starts_with($r->url(), 'https://lookaside.fbsbx.com/media-7'))->count())->toBe($downloads + 1)
+            ->and(collect(rrTextsTo(RR_ADMIN))->contains(fn ($text) => str_starts_with($text, "🧾 Comprobante por revisar — P-{$this->second->id}")))->toBeTrue()
+            ->and(rrLastTo(RR_ADMIN))->toBe("Asocié el comprobante {$reference} al pago P-{$this->second->id}. Te envié sus datos: verifícalo y responde «Sí P-{$this->second->id}» o «No P-{$this->second->id}».")
+            ->and(Subscription::count())->toBe(0);
+
+        rrText($this->store, "Sí P-{$this->second->id}");
+
+        expect($this->second->fresh()->status)->toBe(Payment::STATUS_CONFIRMED)
+            ->and(Subscription::sole()->expires_at->equalTo(now()->addDays(30)))->toBeTrue();
+    });
+
+    it('brings back the replaced payment when the admin names it, closing the new one', function () {
+        rrImage($this->store, 'media-7');
+
+        rrText($this->store, "Asociar P-{$this->first->id}");
+
+        expect(PaymentReceipt::sole()->payment_id)->toBe($this->first->id)
+            ->and($this->first->fresh()->status)->toBe(Payment::STATUS_UNDER_REVIEW)
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_EXPIRED)
+            ->and(Payment::whereIn('status', Payment::OPEN_STATUSES)->count())->toBe(1);
+    });
+
+    it('attaches nothing to a payment that was not a candidate of that alert, or for a reference that does not exist', function (Closure $command, string $expected) {
+        rrImage($this->store, 'media-7');
+        [$reference] = ($this->references)();
+        $other = rrStart(app(CustomerMemory::class)->customerFor($this->store, '573009990000'), $this->plan);
+
+        rrText($this->store, $command($reference, $other, $this));
+
+        expect(PaymentReceipt::count())->toBe(0)->and(rrLastTo(RR_ADMIN))->toContain($expected)->toContain('No se cambió nada')
+            ->and($this->second->fresh()->status)->toBe(Payment::STATUS_PENDING);
+    })->with([
+        'pago de otro cliente' => [fn ($reference, $other) => "Asociar P-{$other->id} {$reference}", 'no es uno de los pagos posibles'],
+        'pago de otro cliente, sin referencia' => [fn ($reference, $other) => "Asociar P-{$other->id}", 'no es uno de los pagos posibles de ningún comprobante'],
+        'pago inexistente' => [fn ($reference) => "Asociar P-999999 {$reference}", 'no es uno de los pagos posibles'],
+        'referencia inexistente' => [fn ($reference, $other, $test) => "Asociar P-{$test->second->id} C-00000", 'No encuentro el comprobante C-00000'],
+    ]);
+
+    it('asks which receipt when the payment is a candidate of several, and attaches the one named', function () {
+        rrImage($this->store, 'media-7');
+        rrImage($this->store, 'media-8');
+        [$firstReference, $secondReference] = ($this->references)();
+
+        rrText($this->store, "Asociar P-{$this->second->id}");
+
+        expect(PaymentReceipt::count())->toBe(0)
+            ->and(rrLastTo(RR_ADMIN))->toContain('aparece en varios comprobantes pendientes')->toContain($firstReference)->toContain($secondReference);
+
+        rrText($this->store, "Asociar P-{$this->second->id} {$secondReference}");
+
+        expect(PaymentReceipt::sole()->payment_id)->toBe($this->second->id);
+    });
+
+    it('never attaches the same receipt twice, and says so', function () {
+        rrImage($this->store, 'media-7');
+        [$reference] = ($this->references)();
+
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+        rrText($this->store, "Asociar P-{$this->first->id}");
+
+        expect(PaymentReceipt::count())->toBe(1)
+            ->and(PaymentReceipt::sole()->payment_id)->toBe($this->second->id)
+            ->and(collect(rrTextsTo(RR_ADMIN))->filter(fn ($text) => str_starts_with($text, '🧾 Comprobante por revisar'))->count())->toBe(1);
+    });
+
+    it('asks for the image again when WhatsApp no longer has it, and keeps the receipt waiting', function () {
+        rrImage($this->store, 'media-7');
+        [$reference] = ($this->references)();
+        $this->fake['media_gone'] = true;
+
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+
+        expect(PaymentReceipt::count())->toBe(0)->and(rrLastTo(RR_ADMIN))->toContain('Pide al cliente que la reenvíe');
+
+        unset($this->fake['media_gone']);
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+
+        expect(PaymentReceipt::sole()->payment_id)->toBe($this->second->id);
+    });
+
+    it('hears «Asociar» only from the store\'s admin', function () {
+        rrImage($this->store, 'media-7');
+
+        rrText($this->store, "Asociar P-{$this->second->id}", RR_CUSTOMER);
+
+        expect(PaymentReceipt::count())->toBe(0)->and($this->second->fresh()->status)->toBe(Payment::STATUS_PENDING);
+    });
+
+    it('never lets a reference overwrite another pending receipt: the newer one gets a longer one, and both can be attached', function () {
+        // Another pending receipt that happens to hold the reference this message would get.
+        $taken = 'C-'.strtoupper(substr(hash('sha256', 'wamid.in.colision'), 0, 5));
+        Cache::put("receipts-unmatched:{$this->store->id}", [$taken => [
+            'wamid' => 'wamid.in.otro', 'media_id' => 'media-otro', 'customer_id' => $this->customer->id,
+            'candidate_ids' => [$this->first->id, $this->second->id], 'read' => ['status' => 'read', 'data' => ['amount' => null, 'reference' => 'AB-123']], 'at' => now()->timestamp,
+        ]], now()->addDays(7));
+
+        rrImage($this->store, 'media-7', null, 'wamid.in.colision');
+        [$reference] = collect(rrTextsTo(RR_ADMIN))->filter(fn ($text) => str_starts_with($text, '🧾 Comprobante sin asociar'))
+            ->map(fn ($text) => preg_match('/\((C-[0-9A-F]+)\)/', $text, $m) === 1 ? $m[1] : null)->values()->all();
+
+        expect($reference)->toBe('C-'.strtoupper(substr(hash('sha256', 'wamid.in.colision'), 0, 6)))
+            ->and(array_keys(Cache::get("receipts-unmatched:{$this->store->id}")))->toBe([$taken, $reference]);
+
+        rrText($this->store, "Asociar P-{$this->second->id} {$reference}");
+
+        expect(PaymentReceipt::sole()->source_wamid)->toBe('wamid.in.colision')
+            ->and(array_keys(Cache::get("receipts-unmatched:{$this->store->id}")))->toBe([$taken]);
+    });
+
+    it('lists the reference and how to attach it in the unmatched alert', function () {
+        rrImage($this->store, 'media-7');
+        [$reference] = ($this->references)();
+
+        expect($reference)->toMatch('/^C-[0-9A-F]{5}$/')
+            ->and(collect(rrTextsTo(RR_ADMIN))->first(fn ($text) => str_contains($text, $reference)))->toContain("responde «Asociar P-número {$reference}»");
     });
 });

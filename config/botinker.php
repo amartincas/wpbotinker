@@ -122,11 +122,22 @@ return [
                 .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas. '
                 .'No inventes importes, beneficios ni condiciones. '
                 .'Si su último mensaje es solo un saludo, un agradecimiento o una cortesía, respóndelo con naturalidad y en pocas palabras, sin ofrecer los planes ni pedirle que escriba algo. '
+                .'Si expresa rechazo, frustración, enojo o falta de interés, responde con calma y respeto en una o dos frases, sin insistir, sin ofrecer los planes y sin mencionar pagos. '
                 .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar con claridad; un «bueno», un «ok» o un «gracias» no es una decisión de compra. En cualquier otro caso usa null. '
                 .'En "question" clasifica siempre su último mensaje: "comercial" si pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes), plantea una duda u objeción sobre comprarlo o decide comprar; '
-                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); "cortesia" si es solo un saludo, un agradecimiento, una despedida o una cortesía; null solo si no se puede saber.',
+                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación), también cuando solo describe en pocas palabras una situación o dificultad personal; "cortesia" si es solo un saludo, un agradecimiento, una despedida o una cortesía; "rechazo" si expresa rechazo, frustración, enojo o falta de interés; null solo si no se puede saber. '
+                .'Entiende el mensaje aunque tenga errores de ortografía, abreviaciones, expresiones coloquiales o esté incompleto («no se como funsiona» es «no sé cómo funciona»): clasifícalo por lo que quiso decir, sin corregirlo, sin comentar sus errores y sin inventar detalles que no dijo. '
+                .'Si de verdad no se entiende, usa null y en "reply" pídele en una frase, con naturalidad, que te cuente un poco más.',
             // What a greeting or a thanks gets when no reply of the model may go out. Generic, for every domain.
             'courtesy_reply' => 'Con gusto. Aquí estoy si quieres saber algo más del servicio.',
+            // What a refusal, frustration or anger gets when no reply of the model may go out: no offer, no payment.
+            'decline_reply' => 'Entiendo. Si en otro momento quieres retomarlo, aquí estaré.',
+            // What a message the model did not classify gets while the customer has a free reply left: neither
+            // the plans nor content, only an invitation to say more. A guided funnel may configure its own.
+            'unclassified_reply' => 'Cuéntame un poco más de tu situación para orientarte mejor.',
+            // When a reactivation may go out: from `from` until `until` (excluded), in `timezone`. A reactivation due
+            // outside goes at the next `from`. The application keeps its own timezone for everything else.
+            'reactivation_window' => ['timezone' => 'America/Bogota', 'from' => '08:00', 'until' => '22:00'],
             'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
 
             // Checks the facts a commercial turn's own wording states against the approved ones

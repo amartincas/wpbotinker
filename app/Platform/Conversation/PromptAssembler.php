@@ -311,7 +311,7 @@ class PromptAssembler
             // A commercial turn's reading of the message (StageReply::QUESTION_*) is part of the same JSON.
             $prompt .= "\n\n### FORMATO DE RESPUESTA\n"
                 .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1'
-                .($commercialTurn ? ', "question": "'.StageReply::QUESTION_COMMERCIAL.'" o "'.StageReply::QUESTION_CONTENT.'" o "'.StageReply::QUESTION_COURTESY.'" o null' : '').'}. ';
+                .($commercialTurn ? ', "question": "'.implode('" o "', StageReply::QUESTIONS).'" o null' : '').'}. ';
             $prompt .= $definition->guided
                 ? 'En "intent" propón qué debe hacer el sistema en este momento de la conversación; usa null para seguir conversando. El sistema valida tu propuesta y ejecuta la operación: tú no ejecutas nada.'
                 : 'En "intent" indica cuál de estas intenciones expresa el último mensaje del cliente; usa null si no expresa ninguna con claridad. '

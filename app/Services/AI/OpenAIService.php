@@ -5,6 +5,7 @@ namespace App\Services\AI;
 use App\Contracts\AiServiceInterface;
 use App\Contracts\ImageReader;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class OpenAIService implements AIServiceInterface, ImageReader
 {
@@ -50,9 +51,11 @@ class OpenAIService implements AIServiceInterface, ImageReader
      * @param string $userMessage The user's message
      * @param string $systemPrompt The system prompt/instructions
      * @param array $history Chat history array of ['role' => 'user|assistant', 'content' => 'message']
+     * @param array|null $schema ['name' => ..., 'schema' => ...]: sent as Structured Outputs (strict). A model that refuses
+     *        it (HTTP 400) gets the same request once without it: the prompt still asks for the JSON
      * @return string The AI response message content
      */
-    public function getResponse(string $userMessage, string $systemPrompt, array $history = []): string
+    public function getResponse(string $userMessage, string $systemPrompt, array $history = [], ?array $schema = null): string
     {
         try {
             // Build messages array: system prompt + history + current message
@@ -77,13 +80,23 @@ class OpenAIService implements AIServiceInterface, ImageReader
                 'content' => $userMessage,
             ];
 
-            $response = Http::withToken($this->apiKey)
-                ->post('https://api.openai.com/v1/chat/completions', [
-                    'model' => $this->model,
-                    'messages' => $messages,
-                    'temperature' => 0.7,
-                    'max_tokens' => 1024,
-                ]);
+            $request = [
+                'model' => $this->model,
+                'messages' => $messages,
+                'temperature' => 0.7,
+                'max_tokens' => 1024,
+            ];
+            $structured = $schema !== null
+                ? $request + ['response_format' => ['type' => 'json_schema', 'json_schema' => ['name' => $schema['name'], 'strict' => true, 'schema' => $schema['schema']]]]
+                : $request;
+
+            $response = Http::withToken($this->apiKey)->post('https://api.openai.com/v1/chat/completions', $structured);
+
+            // A model or account without Structured Outputs refuses the schema: the prompt alone asks for the JSON.
+            if ($schema !== null && $response->status() === 400) {
+                Log::warning('AI_SCHEMA_REFUSED', ['model' => $this->model, 'schema' => $schema['name'], 'error' => $response->json('error.code') ?? $response->json('error.type')]);
+                $response = Http::withToken($this->apiKey)->post('https://api.openai.com/v1/chat/completions', $request);
+            }
 
             if ($response->failed()) {
                 throw new \Exception('OpenAI API error: ' . $response->body());

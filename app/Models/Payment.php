@@ -51,6 +51,8 @@ class Payment extends Model
         // A new receipt sends it back to review; the reviewer may also
         // confirm or reject it directly once the money shows up (or not).
         self::STATUS_NOT_REFLECTED => [self::STATUS_UNDER_REVIEW, self::STATUS_CONFIRMED, self::STATUS_REJECTED],
+        // Only a payment a plan change replaced, within its window, when a receipt of its amount comes (see wasReplaced()).
+        self::STATUS_EXPIRED => [self::STATUS_UNDER_REVIEW],
     ];
 
     /** Copied from the plan when the payment starts; never changes. */
@@ -129,6 +131,11 @@ class Payment extends Model
                 if (! in_array($payment->status, self::TRANSITIONS[$from] ?? [], true)) {
                     throw new InvalidArgumentException("A payment cannot go from [{$from}] to [{$payment->status}].");
                 }
+
+                // A payment that expired with its window still open was replaced by a plan change; one past its window stays expired.
+                if ($from === self::STATUS_EXPIRED && ! $payment->expires_at?->isFuture()) {
+                    throw new InvalidArgumentException('Only a payment a plan change replaced, within its window, can come back for review.');
+                }
             }
         });
 
@@ -147,6 +154,16 @@ class Payment extends Model
     public function isOpen(): bool
     {
         return in_array($this->status, self::OPEN_STATUSES, true);
+    }
+
+    /**
+     * Expired before its window ended: only a plan change does that (a pending
+     * payment expires on its own once its window is past). Its receipt may
+     * still bring it back for review while the window lasts.
+     */
+    public function wasReplaced(): bool
+    {
+        return $this->status === self::STATUS_EXPIRED && (bool) $this->expires_at?->isFuture();
     }
 
     /** Confirmed or rejected: the review is over and its receipts' files must go. */

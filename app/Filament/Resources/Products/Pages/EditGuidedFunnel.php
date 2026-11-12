@@ -36,6 +36,7 @@ class EditGuidedFunnel extends EditProductFunnel
                 : max(1, (int) config('botinker.free_interactions.max', 3)),
             'reactivation_message' => $reactivation['message'] ?? null,
             'reactivation_hours' => $reactivation['after_hours'] ?? GuidedFunnel::DEFAULT_REACTIVATION_HOURS,
+            'unclassified_reply' => GuidedFunnel::unclassifiedReply($base->definition ?? []),
         ]);
     }
 
@@ -89,6 +90,12 @@ class EditGuidedFunnel extends EditProductFunnel
                         'min' => 'Debe ser al menos 1 hora.',
                         'max' => 'No puede superar '.GuidedFunnel::MAX_REACTIVATION_HOURS.' horas: después se cierra la ventana de WhatsApp.',
                     ]),
+                Textarea::make('unclassified_reply')
+                    ->label('Respuesta cuando no se entiende el mensaje (opcional)')
+                    ->helperText('Se envía tal cual cuando la IA no logra clasificar el mensaje y el cliente aún tiene respuestas gratuitas: invita a contar más, sin planes ni contenido. No gasta la respuesta gratuita. Vacío: «'.config('botinker.sales_funnels.guided.unclassified_reply').'»')
+                    ->rows(2)
+                    ->maxLength(GuidedFunnel::MAX_UNCLASSIFIED_REPLY_LENGTH)
+                    ->validationMessages(['max' => 'El texto no puede superar '.GuidedFunnel::MAX_UNCLASSIFIED_REPLY_LENGTH.' caracteres.']),
             ])
             ->statePath('data');
     }
@@ -100,7 +107,7 @@ class EditGuidedFunnel extends EditProductFunnel
     {
         $state = $this->form->getState();
 
-        return GuidedFunnel::definition($state['instructions'], (int) $state['free_replies'], $state['reactivation_message'] ?? null, (int) $state['reactivation_hours']);
+        return GuidedFunnel::definition($state['instructions'], (int) $state['free_replies'], $state['reactivation_message'] ?? null, (int) $state['reactivation_hours'], $state['unclassified_reply'] ?? null);
     }
 
     /**

@@ -825,13 +825,20 @@ describe('choosing a plan by its stored data', function () {
         ['El mensual', 'Mensual'],
     ]);
 
-    it('shows the open payment instead of starting another', function () {
+    it('shows the open payment for the same plan, and changes a pending one to another plan without a second open payment', function () {
         Plan::create(['product_id' => $this->reading->id, 'name' => 'Semanal', 'price' => 8000, 'duration_days' => 7]);
         c2Job($this->store, 'Quiero comprar el plan semanal');
 
-        c2Job($this->store, 'Quiero comprar el plan mensual');
+        c2Job($this->store, 'Quiero comprar el plan semanal');
 
         expect(Payment::sole()->plan_name)->toBe('Semanal')->and(c2Text())->toContain('plan Semanal');
+
+        c2Job($this->store, 'Quiero comprar el plan mensual');
+
+        expect(Payment::whereIn('status', Payment::OPEN_STATUSES)->sole()->plan_name)->toBe('Mensual')
+            ->and(Payment::where('plan_name', 'Semanal')->sole()->status)->toBe(Payment::STATUS_EXPIRED)
+            ->and((float) Payment::where('plan_name', 'Semanal')->sole()->amount)->toBe(8000.0)
+            ->and(c2Text())->toContain('plan Mensual');
     });
 
     it('starts nothing without active plans or payment instructions', function (Closure $setup) {

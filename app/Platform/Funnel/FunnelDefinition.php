@@ -152,6 +152,14 @@ final class FunnelDefinition
             self::assertReactivation($definition['reactivation'], $guided);
         }
 
+        if (array_key_exists('unclassified_reply', $definition)) {
+            $reply = $definition['unclassified_reply'];
+
+            if (! $guided || ! is_string($reply) || trim($reply) === '' || mb_strlen($reply) > GuidedFunnel::MAX_UNCLASSIFIED_REPLY_LENGTH) {
+                throw new InvalidArgumentException('unclassified_reply must be a text of up to '.GuidedFunnel::MAX_UNCLASSIFIED_REPLY_LENGTH.' characters, in a guided funnel.');
+            }
+        }
+
         return new self(
             $name, $goal, $start, $stages, $intents, $limit, $onExhausted,
             $cta !== null ? trim($cta) : null,

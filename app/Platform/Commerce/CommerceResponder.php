@@ -12,6 +12,7 @@ use App\Models\Subscription;
 use Carbon\Carbon;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -253,8 +254,49 @@ class CommerceResponder
         $open = $this->openPayment($customer, $product);
 
         return $open !== null
-            ? $this->reply($product, $this->openPaymentText($store, $product, $open))
+            ? $this->changePlan($store, $conversation, $customer, $product, $open, $plan)
             : $this->startPayment($store, $conversation, $customer, $product, $plan);
+    }
+
+    /**
+     * A plan chosen while a payment is open. A pending payment of another
+     * plan, with no receipt yet, gives way to the chosen one: it expires as it
+     * is, amount and all, and the chosen plan's starts, so there is still one
+     * open payment (the unique open_marker). Once a receipt came, or for the
+     * same plan, the open payment stays and its own text goes out.
+     */
+    private function changePlan(Store $store, Conversation $conversation, Customer $customer, Product $product, Payment $open, Plan $plan): CommerceReply
+    {
+        if ($open->plan_id === $plan->id || ! $this->expiresForAnotherPlan($open)) {
+            // Changed meanwhile by another message: whatever is open now.
+            $current = $this->openPayment($customer, $product);
+
+            return $current !== null
+                ? $this->reply($product, $this->openPaymentText($store, $product, $current))
+                : $this->startPayment($store, $conversation, $customer, $product, $plan);
+        }
+
+        Log::info('PAYMENT_PLAN_CHANGED', ['store_id' => $store->id, 'customer_id' => $customer->id, 'product_id' => $product->id, 'expired_payment_id' => $open->id, 'plan_id' => $plan->id]);
+
+        $started = $this->startPayment($store, $conversation, $customer, $product, $plan);
+
+        return $this->reply($product, "Listo, cambiamos tu pago al plan {$plan->name}.\n\n".$started->text);
+    }
+
+    /** Expires a pending payment no receipt was sent for, under its row's lock; false when it no longer is one. */
+    private function expiresForAnotherPlan(Payment $open): bool
+    {
+        return DB::transaction(function () use ($open) {
+            $payment = Payment::whereKey($open->id)->lockForUpdate()->first();
+
+            if ($payment?->status !== Payment::STATUS_PENDING || $payment->receipt_submitted_at !== null || $payment->receipts()->exists()) {
+                return false;
+            }
+
+            $payment->update(['status' => Payment::STATUS_EXPIRED]);
+
+            return true;
+        });
     }
 
     private function hasValidSubscription(Customer $customer, Product $product): bool
@@ -473,7 +515,12 @@ class CommerceResponder
         $open = $this->openPayment($customer, $product);
 
         if ($open !== null) {
-            return $this->reply($product, $this->openPaymentText($store, $product, $open));
+            // Naming one plan is choosing it, also with a payment open; anything else gets that payment.
+            $named = $this->namedPlans($text, $this->plans($product));
+
+            return $named->count() === 1
+                ? $this->changePlan($store, $conversation, $customer, $product, $open, $named->first())
+                : $this->reply($product, $this->openPaymentText($store, $product, $open));
         }
 
         $plans = $this->plans($product);

@@ -26,25 +26,42 @@ use LogicException;
  * - The customer is told before the admin gets the reply.
  * - Anything that cannot be resolved is answered without touching the
  *   payment.
+ * - «Asociar P-12» attaches a receipt that could not be attached on its own
+ *   (ReceiptIntake::associate()); it is then decided as above.
  */
 class AdminPaymentDecisions
 {
     private const PATTERN = '/^(si|no)(?:[\s,.:;!-]*(?:(?:el\s+)?pago\s*)?(?:p\s*-?\s*|#)?(\d+))?[\s.!]*$/';
 
+    /** «Asociar P-13», optionally with the receipt's reference from its alert: «Asociar P-13 C-3F9A2». */
+    private const ASSOCIATE_PATTERN = '/^asociar[\s,.:;!-]*(?:(?:el\s+)?pago\s*)?(?:p\s*-?\s*|#)?(\d+)(?:[\s,.:;-]+(?:(?:al|el|del)\s+)?(?:comprobante\s*)?c\s*-?\s*([0-9a-f]{5,64}))?[\s.!]*$/';
+
     public function __construct(
         private readonly PaymentReview $review,
         private readonly StoreMessenger $messenger,
+        private readonly ReceiptIntake $receipts,
     ) {}
 
-    /** Whether this message is the store admin answering a payment review. */
+    /** Whether this message is the store admin answering a payment review, or attaching a receipt to a payment. */
     public function handles(Store $store, string $from, string $message): bool
     {
-        return $this->isAdmin($store, $from) && $this->parse($message) !== null;
+        return $this->isAdmin($store, $from) && ($this->parse($message) !== null || $this->parseAssociate($message) !== null);
     }
 
     public function handle(Store $store, string $from, string $message): void
     {
-        if (! $this->isAdmin($store, $from) || ($parsed = $this->parse($message)) === null) {
+        if (! $this->isAdmin($store, $from)) {
+            return;
+        }
+
+        // A receipt no payment could be chosen for: the admin says which (ReceiptIntake::associate()).
+        if (($associate = $this->parseAssociate($message)) !== null) {
+            $this->reply($store, $from, $message, $this->receipts->associate($store, ...$associate));
+
+            return;
+        }
+
+        if (($parsed = $this->parse($message)) === null) {
             return;
         }
 
@@ -188,6 +205,20 @@ class AdminPaymentDecisions
         }
 
         return [$m[1] === 'si', isset($m[2]) && $m[2] !== '' ? (int) $m[2] : null];
+    }
+
+    /**
+     * @return array{0: int, 1: ?string}|null payment id, receipt reference
+     */
+    private function parseAssociate(string $message): ?array
+    {
+        $text = Str::ascii(mb_strtolower(trim($message)));
+
+        if (preg_match(self::ASSOCIATE_PATTERN, $text, $m) !== 1) {
+            return null;
+        }
+
+        return [(int) $m[1], isset($m[2]) && $m[2] !== '' ? 'C-'.strtoupper($m[2]) : null];
     }
 
     private function reply(Store $store, string $from, string $message, string $text): void

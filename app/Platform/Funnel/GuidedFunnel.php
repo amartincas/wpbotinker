@@ -2,7 +2,9 @@
 
 namespace App\Platform\Funnel;
 
+use App\Models\Conversation;
 use App\Platform\Commerce\OpeningMessage;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 /**
@@ -23,6 +25,11 @@ final class GuidedFunnel
 
     public const MAX_REACTIVATION_LENGTH = 1000;
 
+    public const MAX_UNCLASSIFIED_REPLY_LENGTH = 500;
+
+    /** An episode of a conversation, as the reactivation names it: its last_session_at. */
+    public const EPISODE_FORMAT = 'Y-m-d H:i:s';
+
     public const DEFAULT_REACTIVATION_HOURS = 2;
 
     /** Under WhatsApp's 24-hour window, with StoreMessenger's margin. */
@@ -34,10 +41,11 @@ final class GuidedFunnel
      *
      * @return array<string, mixed>
      */
-    public static function definition(string $instructions, int $freeReplies, ?string $reactivationMessage = null, int $reactivationHours = self::DEFAULT_REACTIVATION_HOURS): array
+    public static function definition(string $instructions, int $freeReplies, ?string $reactivationMessage = null, int $reactivationHours = self::DEFAULT_REACTIVATION_HOURS, ?string $unclassifiedReply = null): array
     {
         $texts = config('botinker.sales_funnels.guided');
         $reactivationMessage = trim((string) $reactivationMessage);
+        $unclassifiedReply = trim((string) $unclassifiedReply);
 
         return [
             'guided' => true,
@@ -65,7 +73,23 @@ final class GuidedFunnel
             ]],
             // Without a message there is no reactivation, and no key.
             ...($reactivationMessage !== '' ? ['reactivation' => ['message' => $reactivationMessage, 'after_hours' => $reactivationHours]] : []),
+            // Without its own, the Core's generic one (config sales_funnels.guided.unclassified_reply).
+            ...($unclassifiedReply !== '' ? ['unclassified_reply' => $unclassifiedReply] : []),
         ];
+    }
+
+    /**
+     * What a message the model did not classify gets while the customer has a
+     * free reply left: this guided definition's own text, or null for the
+     * Core's generic one.
+     *
+     * @param  array<string, mixed>  $definition  as stored
+     */
+    public static function unclassifiedReply(array $definition): ?string
+    {
+        $reply = self::isGuided($definition) && is_string($definition['unclassified_reply'] ?? null) ? trim($definition['unclassified_reply']) : '';
+
+        return $reply !== '' ? $reply : null;
     }
 
     /**
@@ -86,6 +110,32 @@ final class GuidedFunnel
         }
 
         return ['message' => $message, 'after_hours' => $hours];
+    }
+
+    /**
+     * The conversation's current episode (its last_session_at) ends without a
+     * reactivation: a commercial turn read a refusal or frustration. Never an
+     * opt-out: the next message is a new episode, reactivated as usual, and
+     * only the explicit stop requests end them for good. The reactivation
+     * reads it when it runs (episodeDeclined()), so one already queued sends
+     * nothing either. Kept beyond the longest wait a reactivation can have.
+     */
+    public static function declineEpisode(Conversation $conversation): void
+    {
+        if ($conversation->last_session_at !== null) {
+            Cache::put(self::declinedKey($conversation->store_id, $conversation->customer_phone, $conversation->last_session_at->format(self::EPISODE_FORMAT)), true, now()->addDays(3));
+        }
+    }
+
+    /** Whether declineEpisode() ended this episode of the conversation. */
+    public static function episodeDeclined(int $storeId, string $phone, string $episode): bool
+    {
+        return Cache::has(self::declinedKey($storeId, $phone, $episode));
+    }
+
+    private static function declinedKey(int $storeId, string $phone, string $episode): string
+    {
+        return 'reactivation-declined:'.$storeId.':'.hash('sha256', $phone.'|'.$episode);
     }
 
     /** The whole message is one of the configured refusals: it ends this episode. */

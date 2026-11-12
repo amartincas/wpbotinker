@@ -22,9 +22,10 @@ class GrokService implements AiServiceInterface
      * @param string $userMessage The user's message
      * @param string $systemPrompt The system prompt/instructions
      * @param array $history Chat history array of ['role' => 'user|assistant', 'content' => 'message']
+     * @param array|null $schema Not sent: the prompt already asks for the JSON, and the Core validates it
      * @return string The AI response message content
      */
-    public function getResponse(string $userMessage, string $systemPrompt, array $history = []): string
+    public function getResponse(string $userMessage, string $systemPrompt, array $history = [], ?array $schema = null): string
     {
         try {
             // Build messages array: system prompt + history + current message

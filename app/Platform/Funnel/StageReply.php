@@ -19,15 +19,58 @@ final class StageReply
     /** Only a greeting, a thanks or another courtesy: answered as one, never as a request. */
     public const QUESTION_COURTESY = 'cortesia';
 
+    /** Refusal, frustration or anger: answered calmly, never with an offer or a payment. */
+    public const QUESTION_DECLINE = 'rechazo';
+
+    /** Every reading of a commercial turn's message. */
+    public const QUESTIONS = [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT, self::QUESTION_COURTESY, self::QUESTION_DECLINE];
+
+    /** How the answer carried "question", for the logs only: absent, empty (null or blank), invalid or valid. */
+    public const FIELD_ABSENT = 'ausente';
+
+    public const FIELD_EMPTY = 'vacio';
+
+    public const FIELD_INVALID = 'invalido';
+
+    public const FIELD_VALID = 'valido';
+
     /**
      * @param  string|null  $question  how the model read the message after the free replies: one of the QUESTION_ values, or null
+     * @param  string  $questionField  how the answer carried it (FIELD_ values), whatever $question ended up being
      */
     private function __construct(
         public readonly ?string $reply,
         public readonly ?string $intent,
         public readonly float $confidence,
         public readonly ?string $question = null,
+        public readonly string $questionField = self::FIELD_ABSENT,
     ) {}
+
+    /**
+     * The JSON schema of a commercial turn's answer (Structured Outputs):
+     * every field present, an intent among the funnel's or null, and a
+     * question among the QUESTION_ values or null when it cannot be told. It
+     * fixes the shape only: parse() still validates every value.
+     *
+     * @param  array<string, string>  $intents  the intents of the funnel
+     * @return array{name: string, schema: array<string, mixed>}
+     */
+    public static function schema(array $intents): array
+    {
+        $oneOf = fn (array $values) => ['anyOf' => [['type' => 'string', 'enum' => array_values($values)], ['type' => 'null']]];
+
+        return ['name' => 'commercial_turn', 'schema' => [
+            'type' => 'object',
+            'properties' => [
+                'reply' => ['type' => 'string'],
+                'intent' => $intents !== [] ? $oneOf(array_keys($intents)) : ['type' => 'null'],
+                'confidence' => ['type' => 'number'],
+                'question' => $oneOf(self::QUESTIONS),
+            ],
+            'required' => ['reply', 'intent', 'confidence', 'question'],
+            'additionalProperties' => false,
+        ]];
+    }
 
     /**
      * The model's own way to ask for the plans, written in its reply: the
@@ -74,14 +117,20 @@ final class StageReply
         $known = is_string($intent) && isset($intents[$intent]);
         $confidence = is_numeric($decoded['confidence'] ?? null) ? max(0.0, min(1.0, (float) $decoded['confidence'])) : 0.0;
         // "Contenido" or " contenido " still says content: never read as no question.
-        $question = is_string($decoded['question'] ?? null) ? mb_strtolower(trim($decoded['question'])) : null;
-        $question = in_array($question, [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT, self::QUESTION_COURTESY], true) ? $question : null;
+        $given = is_string($decoded['question'] ?? null) ? mb_strtolower(trim($decoded['question'])) : null;
+        $question = in_array($given, self::QUESTIONS, true) ? $given : null;
+        $field = match (true) {
+            ! array_key_exists('question', $decoded) => self::FIELD_ABSENT,
+            $question !== null => self::FIELD_VALID,
+            $decoded['question'] === null || $given === '' => self::FIELD_EMPTY,
+            default => self::FIELD_INVALID,
+        };
 
         if (! $known && $marked && isset($intents[GuidedFunnel::INTENT_OFFER])) {
-            return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question);
+            return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question, $field);
         }
 
-        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question);
+        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question, $field);
     }
 
     /** The text without the marker, and without the blank space it leaves. */

@@ -26,7 +26,8 @@ use Throwable;
 /**
  * One message to a prospect who stopped answering: the literal text of the
  * active guided funnel of the conversation's product, once its hours of
- * silence have passed. No model is called.
+ * silence have passed, and only within the allowed hours (allowedAt()): one
+ * due during the quiet hours goes at their end. No model is called.
  *
  * An episode is the conversation's last_session_at when the job was queued
  * (the webhook sets it on every inbound message, before any processing). A
@@ -48,7 +49,7 @@ class SendProspectReactivation implements ShouldQueue
 
     public int $tries = 1;
 
-    private const TIMESTAMP = 'Y-m-d H:i:s';
+    private const TIMESTAMP = GuidedFunnel::EPISODE_FORMAT;
 
     private const EVENT_KEY = 'prospect_reactivation';
 
@@ -76,7 +77,7 @@ class SendProspectReactivation implements ShouldQueue
             }
 
             self::dispatch($store->id, $phone, self::stamp($conversation->last_session_at))
-                ->delay($conversation->last_session_at->copy()->addHours($reactivation['after_hours']));
+                ->delay(self::dueAt($conversation->last_session_at, $reactivation['after_hours']));
         } catch (Throwable $e) {
             Log::error('REACTIVATION_SCHEDULE_FAILED', ['store_id' => $store->id, 'error' => $e::class]);
         }
@@ -118,11 +119,21 @@ class SendProspectReactivation implements ShouldQueue
             return;
         }
 
-        $due = $conversation->last_session_at->copy()->addHours($reactivation['after_hours']);
+        $due = self::dueAt($conversation->last_session_at, $reactivation['after_hours']);
 
         if (now()->lt($due)) {
             // The hours were raised after it was queued: once more, at the new time.
             $this->rescheduled ? $this->skip('not_due', $product) : self::dispatch($this->storeId, $this->phone, $this->episode, true)->delay($due);
+
+            return;
+        }
+
+        // Run late, into the quiet hours (a worker that waited, a day that changed): never now. Once more at the
+        // window's opening, where everything below is checked again.
+        $now = now();
+
+        if (! self::allowedAt($now)->equalTo($now)) {
+            $this->rescheduled ? $this->skip('quiet_hours', $product) : self::dispatch($this->storeId, $this->phone, $this->episode, true)->delay(self::allowedAt($now));
 
             return;
         }
@@ -149,6 +160,55 @@ class SendProspectReactivation implements ShouldQueue
             'product_id' => $product->id,
             'wamid' => $wamid,
         ]);
+    }
+
+    /** The configured hours of silence after the episode, moved into the allowed hours when they end outside them. */
+    public static function dueAt(CarbonInterface $episode, int $afterHours): CarbonInterface
+    {
+        return self::allowedAt($episode->copy()->addHours($afterHours));
+    }
+
+    /**
+     * $at itself when it falls within the reactivation window (config
+     * sales_funnels.guided.reactivation_window: from its opening until its
+     * close, excluded, in its timezone), otherwise the window's next opening.
+     * In $at's own timezone: only the window is read in the configured one, so
+     * stored times keep the application's. Without a valid window, $at.
+     */
+    public static function allowedAt(CarbonInterface $at): CarbonInterface
+    {
+        $window = (array) config('botinker.sales_funnels.guided.reactivation_window', []);
+        $from = self::clock($window['from'] ?? null);
+        $until = self::clock($window['until'] ?? null);
+
+        try {
+            $local = $at->copy()->setTimezone((string) ($window['timezone'] ?? ''));
+        } catch (Throwable) {
+            return $at;
+        }
+
+        if ($from === null || $until === null || $from >= $until) {
+            return $at;
+        }
+
+        $minute = $local->hour * 60 + $local->minute;
+        $opening = $local->copy()->startOfDay()->addMinutes($from);
+
+        return match (true) {
+            $minute < $from => $opening->setTimezone($at->getTimezone()),
+            $minute >= $until => $opening->addDay()->setTimezone($at->getTimezone()),
+            default => $at,
+        };
+    }
+
+    /** "HH:MM" as minutes since midnight (24:00 is the end of the day), or null. */
+    private static function clock(mixed $time): ?int
+    {
+        if (! is_string($time) || preg_match('/^([01]\d|2[0-4]):([0-5]\d)$/', $time, $match) !== 1 || ((int) $match[1] === 24 && (int) $match[2] !== 0)) {
+            return null;
+        }
+
+        return (int) $match[1] * 60 + (int) $match[2];
     }
 
     /** @return array{message: string, after_hours: int}|null */
@@ -188,6 +248,11 @@ class SendProspectReactivation implements ShouldQueue
     {
         if ($conversation->reactivation_opted_out_at !== null) {
             return 'opted_out';
+        }
+
+        // The customer refused or showed frustration in this episode (GuidedFunnel::declineEpisode()): this one ends here.
+        if (GuidedFunnel::episodeDeclined($this->storeId, $this->phone, $this->episode)) {
+            return 'declined_episode';
         }
 
         if (Lead::where('store_id', $this->storeId)->where('customer_phone', $this->phone)->where('bot_active', false)->exists()) {
