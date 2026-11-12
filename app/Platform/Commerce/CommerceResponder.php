@@ -77,6 +77,9 @@ class CommerceResponder
     /** Asking how the service or the payment is, not asking to buy it. */
     private const CONSULTATION = '/\b(?:incluyen?|incluido|funcionan?|consiste|sirven?|beneficios?|ventajas?|diferencias?|obtengo|obtener|recibo|recibir|recomiendas?|renueva|seguros?|segura|seguridad|confiables?)\b|\b(?:es|son)\s+(?:el|los|mi|mis)\s+pagos?\b/';
 
+    /** Asking to know about it ("quiero información de la suscripción"), which is not asking to buy it. */
+    private const INFORMATION = '/\b(?:informacion|info|saber|consultar)\b/';
+
     /** The customer says there is something to resolve first. */
     private const DOUBT = '/\b(?:dudas?|preguntas?|antes de)\b/';
 
@@ -522,6 +525,18 @@ class CommerceResponder
         return $this->reply($product, $this->openPaymentText($store, $product, $payment));
     }
 
+    /**
+     * One line about the payment already open, for a conversation that goes on
+     * meanwhile: the instructions in full only when asked for («pagar», its
+     * status). A payment in review or not reflected already says it in one line.
+     */
+    public function paymentReminder(Store $store, Product $product, Payment $payment): string
+    {
+        return $payment->status === Payment::STATUS_PENDING
+            ? "Tu pago de «{$product->name}», plan {$payment->plan_name}, sigue pendiente. Cuando pagues, envía el comprobante por este chat; si necesitas de nuevo los datos de pago, escribe «pagar»."
+            : $this->openPaymentText($store, $product, $payment);
+    }
+
     private function openPaymentText(Store $store, Product $product, Payment $payment): string
     {
         return match ($payment->status) {
@@ -669,8 +684,10 @@ class CommerceResponder
             return null;
         }
 
+        // Without a purchase verb, only naming the subscription is paying ("suscripción"); asking for
+        // information about it is a question for the conversation.
         if (! $verb) {
-            return $allCommercial ? self::INTENT_PAY : null;
+            return $allCommercial && preg_match(self::INFORMATION, $text) !== 1 ? self::INTENT_PAY : null;
         }
 
         $forPaying = preg_match('/\bpara\s+(?:'.implode('|', self::PURCHASE_VERBS).')\b/', $text) === 1;

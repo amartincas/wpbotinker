@@ -24,6 +24,7 @@ use App\Platform\Contracts\ProvidesRetrievalGuide;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Funnel\FunnelDefinition;
 use App\Platform\Funnel\FunnelStep;
+use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelRunner;
 use App\Platform\Funnel\StageReply;
 use App\Platform\Knowledge\KnowledgeAccess;
@@ -65,9 +66,6 @@ class ConversationPipeline
 
     /** Characters kept of the question a clarification interrupted. */
     private const MAX_ORIGIN_LENGTH = 1000;
-
-    /** The longest text message WhatsApp accepts. */
-    private const MAX_WHATSAPP_TEXT = 4096;
 
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
@@ -317,14 +315,19 @@ class ConversationPipeline
      */
     private function runFunnel(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, AccessDecision $access, ?string $wamid): void
     {
-        if ($access->openPayment !== null || ! $this->funnels->isProspect($access)) {
+        $funnel = $product->activeFunnel();
+        // A prospect of a guided funnel with a payment open keeps conversing: the Core never starts a
+        // second one (CommerceResponder::pay()). Only the retry of the purchase that opened it gets its message again.
+        $paymentBlocks = $access->openPayment !== null
+            && (! $funnel->funnelDefinition()->guided || Cache::has($this->purchaseDestinationKey($access->openPayment)));
+
+        if (! $this->funnels->isProspect($access) || $paymentBlocks) {
             $this->replyBlocked($store, $conversation, $from, $messageBody, $customer, $product, $domain, $access);
             $this->finishPurchase($store, $conversation, $product, $access, $wamid);
 
             return;
         }
 
-        $funnel = $product->activeFunnel();
         $step = $this->funnels->begin($conversation, $product, $funnel, $access, $messageBody, $query);
 
         Log::info('FUNNEL_STEP', ['store_id' => $store->id, 'product_id' => $product->id, 'version' => $funnel->version, 'kind' => $step->kind, 'stage' => $step->stage?->key, 'next' => $step->nextStage]);
@@ -352,14 +355,6 @@ class ConversationPipeline
             $this->deliverTurn($store, $from, $messageBody, $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $step->action, false), $domain->key());
             $this->afterFunnelOffer($step->action === FunnelDefinition::ACTION_SHOW_OFFER, $conversation, $product);
             $this->funnels->advance($conversation, $product, $funnel, $step->nextStage, $step->interactions);
-
-            return;
-        }
-
-        // A guided funnel's opening is followed by its commercial instruction, in the same message.
-        // An opening that already shows the plans goes out alone, as configured.
-        if ($step->kind === FunnelStep::LITERAL && $step->isOpening && $step->definition->guided && ! $this->carriesPlans($step->text)) {
-            $this->openingTurn($store, $conversation, $from, $messageBody, $customer, $product, $domain, $funnel, $step, $wamid);
 
             return;
         }
@@ -464,7 +459,11 @@ class ConversationPipeline
             $justShown = $step->definition->guided && ($lastFree || $proposed) && $this->commerce->offerRecentlyShown($product, $conversation);
             $showsOffer = ($proposed || $lastFree) && ! $justShown;
 
-            if ($showsOffer) {
+            if ($showsOffer && $access->openPayment !== null) {
+                // The plan is already chosen: its payment's reminder, not the plans again.
+                $parts[] = $this->commerce->paymentReminder($store, $product, $access->openPayment);
+                $showsOffer = false;
+            } elseif ($showsOffer) {
                 $parts[] = $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, FunnelDefinition::ACTION_SHOW_OFFER, true);
             } elseif ($justShown) {
                 $parts[] = $this->commerce->offerPointer();
@@ -485,79 +484,6 @@ class ConversationPipeline
 
             throw $e;
         }
-    }
-
-    /**
-     * The first message of a guided funnel that triggers the product's opening:
-     * one message with the opening exactly as written and, after it, the
-     * funnel's commercial instruction in the model's words. The model is told
-     * the opening goes right before its reply, so it does not present the
-     * product again. Its wording passes like any commercial one, and [Planes]
-     * adds the Core's official plans. Without a reply that may go out, the
-     * opening goes alone, as it did before.
-     *
-     * Like the opening alone, it spends no free reply nor read: it happens once
-     * per conversation, since the state only exists once it was sent. A retry
-     * reuses the model's answer and sends the whole message again.
-     */
-    private function openingTurn(Store $store, Conversation $conversation, string $from, string $messageBody, $customer, Product $product, DomainModule $domain, SalesFunnel $funnel, FunnelStep $step, ?string $wamid): void
-    {
-        $definition = $step->definition;
-        $stage = $definition->start();
-        $opening = $this->fillPlaceholders($step->text, $product);
-        $turnKey = $wamid !== null ? "{$wamid}#turn" : null;
-        $reply = null;
-        $modelFailed = false;
-
-        try {
-            $facts = $this->advisor->shareableFacts($domain, $this->memory->visibleFacts($customer, $domain));
-            $raw = $this->rememberedSample($store, $turnKey);
-
-            if ($raw === null) {
-                $raw = AIServiceFactory::make($store)->getResponse(
-                    $messageBody,
-                    $this->prompts->buildFunnelStage($store, $domain, $product, $definition, $stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true, opening: $opening),
-                    $this->history($store, $from, $domain->key()),
-                );
-                $this->rememberSample($store, $turnKey, $raw);
-            }
-
-            $reply = StageReply::parse($raw, true, $definition->intents);
-        } catch (Throwable $e) {
-            $modelFailed = true;
-            Log::warning('FUNNEL_OPENING_TURN_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'error' => $e::class]);
-        }
-
-        // A presentation: it may list what the service is for, each line checked as any sentence.
-        $violation = $reply?->reply !== null ? $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases, presentation: true) : 'empty';
-        // Only the plans: asking to know the product is never a purchase.
-        $shows = $reply !== null && $this->funnels->afterReply(FunnelStep::read($definition, $stage, 0), $reply)->action === FunnelDefinition::ACTION_SHOW_OFFER;
-        $offer = $shows ? $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $definition, FunnelDefinition::ACTION_SHOW_OFFER, true) : null;
-        $join = fn (?string $argument) => implode("\n\n", array_filter([$opening, $argument, $offer], fn (?string $part) => $part !== null && $part !== ''));
-
-        // WhatsApp refuses a longer text: the reply gives way, never the opening nor the plans.
-        if ($violation === null && mb_strlen($join($reply->reply)) > self::MAX_WHATSAPP_TEXT) {
-            $violation = 'too_long';
-        }
-
-        $argument = $violation === null ? $reply->reply : null;
-        $text = $join($argument);
-
-        Log::info('FUNNEL_OPENING_TURN', [
-            'store_id' => $store->id, 'product_id' => $product->id, 'model_failed' => $modelFailed, 'intent' => $reply?->intent,
-            'reply_characters' => mb_strlen((string) $reply?->reply), 'discarded' => $violation, 'offer' => $shows, 'message_characters' => mb_strlen($text),
-        ]);
-
-        if ($argument !== null) {
-            $this->observeClaims($store, $domain, $product, FunnelStep::read($definition, $stage, 0), $argument, $wamid);
-        }
-
-        // The opening replaces the store's welcome, as when it goes alone.
-        $this->welcome = null;
-        $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
-        $this->afterFunnelOffer($shows, $conversation, $product);
-        $this->forgetSample($store, $turnKey);
-        $this->funnels->advance($conversation, $product, $funnel, $stage->key, 0);
     }
 
     /** Gives back a reservation once: the variable is emptied so nothing releases it again. */
@@ -637,10 +563,14 @@ class ConversationPipeline
             }
         }
 
-        $rejected = $outcome?->action !== null ? $this->limitActionRejection($outcome->action, $reply, $product, $conversation) : null;
+        $rejected = $outcome?->action !== null ? $this->limitActionRejection($outcome->action, $reply) : null;
         $action = $rejected === null ? $outcome?->action : null;
         $commercial = $reply?->question === StageReply::QUESTION_COMMERCIAL;
         $content = $reply?->question === StageReply::QUESTION_CONTENT;
+        // A greeting or a thanks, as the model read it, or plainly one when the model did not read it.
+        $courtesy = $reply?->question === StageReply::QUESTION_COURTESY || ($reply?->question === null && GuidedFunnel::isCourtesy($messageBody));
+        // With a payment open, its own short reminder stands for the plans: the customer already chose one.
+        $payment = $access->openPayment;
         $read = ['store_id' => $store->id, 'product_id' => $product->id, 'intent' => $reply?->intent, 'confidence' => $reply?->confidence, 'question' => $reply?->question, 'action_rejected' => $rejected, 'free_available' => $free, 'read' => $readKind];
 
         if ($action === FunnelDefinition::ACTION_START_PAYMENT) {
@@ -656,8 +586,12 @@ class ConversationPipeline
             // Core's official plans, or how to ask for them when they were just shown.
             $argumentViolation = $reply->reply !== null ? $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases) : 'empty';
             $argument = $argumentViolation === null ? $reply->reply : null;
-            $repeated = $this->commerce->offerRecentlyShown($product, $conversation);
-            $offer = $repeated ? $this->commerce->offerPointer() : $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true);
+            $repeated = $payment !== null || $this->commerce->offerRecentlyShown($product, $conversation);
+            $offer = match (true) {
+                $payment !== null => $this->commerce->paymentReminder($store, $product, $payment),
+                $repeated => $this->commerce->offerPointer(),
+                default => $this->funnelAction($store, $conversation, $messageBody, $customer, $product, $step->definition, $action, true),
+            };
 
             Log::info('FUNNEL_LIMIT_READ', $read + ['action' => $action, 'discarded' => $argumentViolation, 'offer_repeated' => $repeated]);
 
@@ -694,6 +628,8 @@ class ConversationPipeline
         $violation = match (true) {
             $reply?->reply === null => 'empty',
             $freeWording => $this->claims->commercialWordingViolation($reply->reply, $product->name, (array) $product->aliases),
+            // A courtesy is answered as one: short and giving nothing, but with no invitation to the plans.
+            $courtesy => $this->claims->courtesyReplyViolation($reply->reply, $product->name, (array) $product->aliases),
             default => $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases),
         };
 
@@ -704,16 +640,23 @@ class ConversationPipeline
         }
 
         // A commercial question gets the offer at its configured frequency; any other message, only how to ask for it.
-        $offer = fn () => $commercial ? $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation) : $this->commerce->offerPointer();
+        $offer = fn () => match (true) {
+            $payment !== null => $this->commerce->paymentReminder($store, $product, $payment),
+            $commercial => $this->commerce->offerAfterCommercialReply($store, $product, $access, $conversation),
+            default => $this->commerce->offerPointer(),
+        };
+        // Plans just shown, or a payment already open: an answer goes alone, without inviting to them again.
+        $answered = fn (string $answer) => $payment !== null || $this->commerce->offerRecentlyShown($product, $conversation) ? $answer : $answer."\n\n".$offer();
 
         $literalReason = $literal['reason'] ?? null;
         $sendsWording = ! in_array($literalReason, ['answered', 'no_match'], true) && $outcome !== null && $violation === null;
 
         $text = match (true) {
-            $literalReason === 'answered' => $literal['text']."\n\n".$offer(),
+            $literalReason === 'answered' => $answered($literal['text']),
             $literalReason === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
-            // The model already invited: something about the plans joins only if they were not just shown.
-            $sendsWording => $this->commerce->offerRecentlyShown($product, $conversation) ? $reply->reply : $reply->reply."\n\n".$offer(),
+            $courtesy && $sendsWording => $reply->reply,
+            $courtesy => trim((string) config('botinker.sales_funnels.guided.courtesy_reply')),
+            $sendsWording => $answered($reply->reply),
             // The fixed reply says the free replies are over only when they are.
             $free => $offer(),
             default => trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$offer(),
@@ -755,18 +698,15 @@ class ConversationPipeline
 
     /**
      * Why the Core does not take the action the model proposed after the free
-     * replies, or null. The offer needs a message read as commercial; a
-     * purchase, one not read as content, and either read as commercial or
-     * right after the offer ("ok, lo tomo").
+     * replies, or null. Both need a message read as commercial: a decision to
+     * buy is one ("ok, lo tomo"), while an unread «bueno», «ok» or «gracias»,
+     * even right after the offer, never starts a payment.
      */
-    private function limitActionRejection(string $action, StageReply $reply, Product $product, Conversation $conversation): ?string
+    private function limitActionRejection(string $action, StageReply $reply): ?string
     {
         return match ($action) {
             FunnelDefinition::ACTION_SHOW_OFFER => $reply->question === StageReply::QUESTION_COMMERCIAL ? null : 'offer_unclassified',
-            FunnelDefinition::ACTION_START_PAYMENT => $reply->question === StageReply::QUESTION_COMMERCIAL
-                || ($reply->question === null && $this->commerce->offerRecentlyShown($product, $conversation))
-                    ? null
-                    : 'purchase_without_context',
+            FunnelDefinition::ACTION_START_PAYMENT => $reply->question === StageReply::QUESTION_COMMERCIAL ? null : 'purchase_without_context',
             default => null,
         };
     }

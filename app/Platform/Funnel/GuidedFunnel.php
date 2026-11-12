@@ -122,6 +122,14 @@ final class GuidedFunnel
         return false;
     }
 
+    /** The whole message is greetings and courtesies, nothing else: «Hola, buenas noches», «¡Gracias!». */
+    public static function isCourtesy(string $message): bool
+    {
+        $courtesy = '(?:hola|buenas tardes|buenas noches|buenos dias|buen dia|buenas|saludos|que tal|mucho gusto|un gusto|por favor|muchas gracias|mil gracias|gracias|muy amable)';
+
+        return preg_match("/^(?:{$courtesy}(?:\s+|$))+$/", self::plain($message)) === 1;
+    }
+
     /** "hola por favor no me escribas mas gracias" is "no me escribas mas". */
     private static function withoutCourtesies(string $text): string
     {

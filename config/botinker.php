@@ -121,13 +121,12 @@ return [
                 .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción; '
                 .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas. '
                 .'No inventes importes, beneficios ni condiciones. '
-                .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar; en cualquier otro caso usa null. '
+                .'Si su último mensaje es solo un saludo, un agradecimiento o una cortesía, respóndelo con naturalidad y en pocas palabras, sin ofrecer los planes ni pedirle que escriba algo. '
+                .'Elige una intención solo si su último mensaje pide ver los planes o decide comprar con claridad; un «bueno», un «ok» o un «gracias» no es una decisión de compra. En cualquier otro caso usa null. '
                 .'En "question" clasifica siempre su último mensaje: "comercial" si pregunta por el producto como compra (qué incluye, cómo funciona, duración, condiciones, pagos o planes), plantea una duda u objeción sobre comprarlo o decide comprar; '
-                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); null solo si no se puede saber.',
-            // The first message that triggers the product's opening: the opening goes out as written, followed by the model's reply in the same message.
-            'opening_turn' => 'El cliente escribió el mensaje con el que pide conocer el producto. Recibirá el MENSAJE INICIAL de abajo justo antes de tu respuesta, en el mismo mensaje: '
-                .'tu respuesta lo continúa siguiendo el PROCESO COMERCIAL, sin repetir el saludo ni la presentación que ya contiene. '
-                .'Si el PROCESO COMERCIAL indica presentar los planes en este mensaje, escribe [Planes] al final de tu respuesta, aunque el cliente no los haya pedido.',
+                .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación); "cortesia" si es solo un saludo, un agradecimiento, una despedida o una cortesía; null solo si no se puede saber.',
+            // What a greeting or a thanks gets when no reply of the model may go out. Generic, for every domain.
+            'courtesy_reply' => 'Con gusto. Aquí estoy si quieres saber algo más del servicio.',
             'limit_reply' => 'Hasta aquí llegan tus respuestas gratuitas. Gracias por conversar. Si quieres seguir con el servicio completo, puedes activar tu suscripción cuando lo decidas.',
 
             // Checks the facts a commercial turn's own wording states against the approved ones

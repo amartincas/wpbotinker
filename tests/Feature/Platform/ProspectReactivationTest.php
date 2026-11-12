@@ -178,6 +178,20 @@ describe('sending', function () {
             ->and(rxConversation()->reactivation_episode_at->equalTo(rxConversation()->last_session_at))->toBeTrue();
     });
 
+    it('lets the prospect answer it with a greeting and get a natural reply, with the reactivation in the model\'s history', function () {
+        rxRun(rxSilentProspect());
+
+        rxSay('Hola');
+
+        $chat = collect(Http::recorded(fn (Request $request) => str_contains($request->url(), 'api.openai.com')))->last()[0]->data()['messages'];
+        $sent = rxSent();
+
+        expect(end($sent))->toBe('RESPUESTA-DEL-MODELO')
+            ->and(end($sent))->not->toContain('Escribe «planes»')
+            ->and(collect($chat)->contains(fn (array $message) => $message['role'] === 'assistant' && $message['content'] === RX_MESSAGE))->toBeTrue()
+            ->and(Payment::count())->toBe(0);
+    });
+
     it('sends nothing before the hours have passed, and asks again once at the new time when they were raised', function () {
         rxSay('Hola');
         $job = rxLastJob();

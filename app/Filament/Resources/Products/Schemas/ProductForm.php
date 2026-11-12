@@ -204,9 +204,10 @@ class ProductForm
                             ->columnSpanFull(),
                         Textarea::make('opening_message')
                             ->label('Mensaje inicial (opcional)')
-                            ->helperText('Se envía exactamente como está escrito, en lugar del saludo de la tienda, cuando el primer mensaje del cliente es uno de los activadores. Cuenta como la primera respuesta gratuita y no lleva precios. Vacío: sin mensaje inicial.')
+                            ->helperText('Se envía exactamente como está escrito, en lugar del saludo de la tienda, cuando el primer mensaje del cliente es uno de los activadores. Con un embudo activo puede ser la presentación comercial completa: escribe [Planes] donde deben ir los planes y el sistema inserta los oficiales, con sus precios; no escribas precios a mano. Sin embudo cuenta como la primera respuesta gratuita. Vacío: sin mensaje inicial.')
                             ->rows(5)
-                            ->maxLength(2000)
+                            // With its plans and their buttons' text it stays within a WhatsApp message (4096 characters).
+                            ->maxLength(3500)
                             ->requiredWith('opening_triggers')
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
                             ->columnSpanFull(),

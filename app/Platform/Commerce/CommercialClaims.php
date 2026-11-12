@@ -147,13 +147,9 @@ final class CommercialClaims
      * reduces what a model could give away or make up; it cannot prove there
      * is none.
      *
-     * A presentation of the product (the reply that follows its opening) may
-     * list what the service is for and what it develops: every line of it is
-     * still checked like any sentence, so a list of instructions does not pass.
-     *
      * @param  list<string>  $aliases  other whole names of the product
      */
-    public function commercialWordingViolation(string $text, string $productName = '', array $aliases = [], bool $presentation = false): ?string
+    public function commercialWordingViolation(string $text, string $productName = '', array $aliases = []): ?string
     {
         if ($reason = $this->funnelViolation($text, $productName)) {
             return $reason;
@@ -186,8 +182,33 @@ final class CommercialClaims
         }
 
         return match (true) {
-            ! $presentation && preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
+            preg_match('/^\s*(?:[-*•]|\d+\s*[.):])\s/mu', $text) === 1 => 'list',
             $this->quotesAnExample($text, $names) => 'quoted_example',
+            default => null,
+        };
+    }
+
+    /**
+     * Why a guided funnel's reply to a greeting, a thanks or another courtesy
+     * cannot go out, or null. Nothing commercialWordingViolation() forbids, and
+     * as short as a reply after the free replies (max_characters,
+     * max_sentences), but with no invitation to the plans: a courtesy is
+     * answered as one.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function courtesyReplyViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        if ($reason = $this->commercialWordingViolation($text, $productName, $aliases)) {
+            return $reason;
+        }
+
+        $rules = (array) config('botinker.sales_funnels.guided.after_limit_rules', []);
+        $sentences = array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $text)), fn (string $sentence) => $sentence !== '');
+
+        return match (true) {
+            mb_strlen($text) > (int) ($rules['max_characters'] ?? 400) => 'too_long',
+            count($sentences) > (int) ($rules['max_sentences'] ?? 4) => 'too_many_sentences',
             default => null,
         };
     }

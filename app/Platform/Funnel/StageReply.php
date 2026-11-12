@@ -16,6 +16,9 @@ final class StageReply
     /** What the message asks of the service's subject itself. */
     public const QUESTION_CONTENT = 'contenido';
 
+    /** Only a greeting, a thanks or another courtesy: answered as one, never as a request. */
+    public const QUESTION_COURTESY = 'cortesia';
+
     /**
      * @param  string|null  $question  how the model read the message after the free replies: one of the QUESTION_ values, or null
      */
@@ -72,7 +75,7 @@ final class StageReply
         $confidence = is_numeric($decoded['confidence'] ?? null) ? max(0.0, min(1.0, (float) $decoded['confidence'])) : 0.0;
         // "Contenido" or " contenido " still says content: never read as no question.
         $question = is_string($decoded['question'] ?? null) ? mb_strtolower(trim($decoded['question'])) : null;
-        $question = in_array($question, [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT], true) ? $question : null;
+        $question = in_array($question, [self::QUESTION_COMMERCIAL, self::QUESTION_CONTENT, self::QUESTION_COURTESY], true) ? $question : null;
 
         if (! $known && $marked && isset($intents[GuidedFunnel::INTENT_OFFER])) {
             return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question);
