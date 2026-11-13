@@ -14,6 +14,7 @@ use App\Services\Inventory\ProductFinderService;
 use App\Platform\Commerce\AdminPaymentDecisions;
 use App\Platform\Commerce\ReceiptIntake;
 use App\Platform\Conversation\ConversationPipeline;
+use App\Platform\Conversation\PromptAssembler;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
@@ -194,12 +195,14 @@ class ProcessWhatsAppMessage implements ShouldQueue
                 }
 
                 try {
-                    $transcribedText = $transcriber->transcribeAudio(Storage::disk('local')->path($localPath));
-                    $this->messageBody = "🎤 [AUDIO]: " . trim($transcribedText);
+                    $transcribedText = trim($transcriber->transcribeAudio(Storage::disk('local')->path($localPath)));
 
-                    if (empty($this->messageBody)) {
-                        throw new \Exception('Transcription returned empty text');
+                    // Without one letter or digit there is nothing to answer: the customer is asked again.
+                    if (!preg_match('/[\p{L}\p{N}]/u', $transcribedText)) {
+                        throw new \Exception('Transcription returned no recognizable text');
                     }
+
+                    $this->messageBody = PromptAssembler::AUDIO_MARKER . ' ' . $transcribedText;
 
                     Log::info('Audio transcription completed successfully', [
                         'store_id' => $this->store->id,

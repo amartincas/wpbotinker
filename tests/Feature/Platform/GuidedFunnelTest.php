@@ -72,10 +72,15 @@ beforeEach(function () {
     $this->whatsAppAmbiguous = false;
     $this->schemaRefused = false;
     $this->transcriptions = [];
+    $this->transcriberDown = false;
 
     Http::fake(function (Request $request) {
         // A voice note: its media, its file and its transcription.
         if (str_contains($request->url(), 'api.openai.com/v1/audio/transcriptions')) {
+            if ($this->transcriberDown) {
+                return Http::response(['error' => 'upstream'], 500);
+            }
+
             return Http::response(['text' => array_shift($this->transcriptions) ?? 'AUDIO-SIN-TEXTO']);
         }
 
@@ -3194,5 +3199,89 @@ describe('the contextual close after the free replies', function () {
 
         expect(ConversationFunnelState::sole()->context)->not->toHaveKey('closing')->not->toHaveKey('declined_until');
         Log::shouldNotHaveReceived('info', ['FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing'] !== null)]);
+    });
+});
+
+describe('voice notes: the transcription is the customer\'s message', function () {
+    beforeEach(function () {
+        gfPublish(free: 3);
+        $this->voice = function (string $transcription) {
+            $this->transcriptions[] = $transcription;
+            ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, null, 'wamid.in.'.Str::random(10), 'audio', 'media-'.Str::random(6));
+            $this->travel(1)->seconds();
+        };
+        // The last message each model call received, and its system prompt.
+        $this->lastUserMessage = fn (array $chat) => end($chat)['content'];
+        $this->audioRule = 'es la transcripción de un audio del cliente: es su mensaje, respóndelo como si lo hubiera escrito. Nunca digas que no puedes escuchar ni procesar audios';
+        gfSay('Hola');
+    });
+
+    it('answers what a voice note says, with the rule that it is the customer\'s message in every prompt', function (string $transcription) {
+        $this->turns = [gfJson('', question: 'contenido')];
+        $this->replies = [gfJson('RESPUESTA-AL-AUDIO')];
+        $chats = count($this->chats);
+
+        ($this->voice)($transcription);
+
+        $calls = array_slice($this->chats, $chats);
+
+        expect(gfLast())->toBe('RESPUESTA-AL-AUDIO')->not->toContain('No pude transcribir')
+            ->and($calls)->not->toBeEmpty()
+            ->and(WhatsAppMessage::where('role', 'user')->latest('id')->value('content'))->toBe(PromptAssembler::AUDIO_MARKER.' '.$transcription);
+
+        foreach ($calls as $chat) {
+            if (str_contains($chat[0]['content'], 'Eres un selector de conocimiento')) {
+                continue;
+            }
+
+            // The whole transcription reaches the model as the customer's message, and the rule is there.
+            expect(($this->lastUserMessage)($chat))->toBe('🎤 [AUDIO]: '.$transcription)
+                ->and($chat[0]['content'])->toContain($this->audioRule)
+                ->and(substr_count($chat[0]['content'], $this->audioRule))->toBe(1);
+        }
+    })->with([
+        'válida' => ['Quiero saber cómo funciona el acompañamiento para no volver a perder.'],
+        'breve' => ['para no volver a perder.'],
+        'extensa' => [str_repeat('Te cuento que llevo varios meses intentando organizarme y siempre termino dejando todo a medias, ', 15).'¿me puedes orientar?'],
+    ]);
+
+    it('asks the customer to repeat or write it, and spends nothing, when there is no valid transcription', function (?string $transcription) {
+        $transcription === null ? $this->transcriberDown = true : null;
+        $chats = count($this->chats);
+        $messages = WhatsAppMessage::count();
+        $samples = SampleDelivery::count();
+
+        ($this->voice)($transcription ?? '');
+
+        expect(gfLast())->toBe('No pude transcribir tu audio. Por favor intenta de nuevo o escríbeme tu pregunta.')
+            ->and(array_slice($this->chats, $chats))->toBe([])
+            ->and(WhatsAppMessage::count())->toBe($messages)
+            ->and(SampleDelivery::count())->toBe($samples);
+    })->with([
+        'vacía' => [''],
+        'solo espacios' => ['   '],
+        'ilegible, sin letras ni números' => ['... ¿? ♪♪'],
+        'fallida' => [null],
+    ]);
+
+    it('answers a voice note in a commercial conversation already under way, with the rule in the commercial turn', function () {
+        gfPublish(free: 1);
+        gfSay('¿Cómo funciona?');
+        $this->turns = [gfJson('Te entiendo, quieres dejar de perder oportunidades. El servicio te acompaña en eso; conoce los planes.', question: 'comercial')];
+
+        ($this->voice)('para no volver a perder.');
+
+        expect(gfLast())->toStartWith('Te entiendo, quieres dejar de perder oportunidades.')->not->toContain('No pude transcribir')
+            ->and(gfLastTurnPrompt())->toContain($this->audioRule)
+            ->and(($this->lastUserMessage)(collect($this->chats)->last(fn (array $chat) => str_contains($chat[0]['content'], 'Este es un turno comercial'))))->toBe('🎤 [AUDIO]: para no volver a perder.')
+            ->and(Payment::count())->toBe(0);
+    });
+
+    it('carries the rule in the prompt of a reply outside the funnel, after every other configured text', function () {
+        $prompt = app(PromptAssembler::class)->build($this->store, null, $this->product);
+
+        expect($prompt)->toContain($this->audioRule)
+            ->and(strpos($prompt, $this->audioRule))->toBeGreaterThan(strpos($prompt, '### REGLAS DEL SISTEMA'))
+            ->and($prompt)->toEndWith('- Si la información disponible no basta para responder, dilo con honestidad.');
     });
 });
