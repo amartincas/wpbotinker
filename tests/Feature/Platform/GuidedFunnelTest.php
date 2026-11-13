@@ -150,9 +150,11 @@ beforeEach(function () {
     $this->versions = app(SalesFunnelVersions::class);
 });
 
-function gfJson(string $reply, ?string $intent = null, float $confidence = 0.0, ?string $question = null): string
+function gfJson(string $reply, ?string $intent = null, float $confidence = 0.0, ?string $question = null, ?string $fallback = null): string
 {
-    return json_encode(['reply' => $reply, 'intent' => $intent, 'confidence' => $confidence] + ($question !== null ? ['question' => $question] : []), JSON_UNESCAPED_UNICODE);
+    return json_encode(['reply' => $reply, 'intent' => $intent, 'confidence' => $confidence]
+        + ($question !== null ? ['question' => $question] : [])
+        + ($fallback !== null ? ['fallback_reply' => $fallback] : []), JSON_UNESCAPED_UNICODE);
 }
 
 function gfPublish(string $instructions = 'INSTRUCCION-DEL-ADMINISTRADOR', int $free = 3): SalesFunnel
@@ -987,7 +989,7 @@ describe('the question after the limit', function () {
 
         gfSay('¿Cómo le hablo a una chica en un bar?');
 
-        expect(gfLastTurnPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1, "question": "comercial" o "contenido" o "cortesia" o "rechazo" o null}')
+        expect(gfLastTurnPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1, "question": "comercial" o "contenido" o "cortesia" o "rechazo" o null, "fallback_reply": "respuesta alternativa breve"}')
             ->toContain('En "question" clasifica siempre su último mensaje')
             ->and(gfLastPrompt())->toContain('{"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1}')->not->toContain('"question"');
     });
@@ -1971,7 +1973,7 @@ describe('a message the model did not classify', function () {
 
         Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['question_field'] === $field && $context['question'] === $question
             && is_int($context['reply_characters'])
-            && array_slice(array_keys($context), -2) === ['question_field', 'reply_characters']
+            && array_slice(array_keys($context), -4) === ['question_field', 'reply_characters', 'fallback', 'fallback_discarded']
             && ! in_array('Te entiendo.', $context, true)));
     })->with([
         'ausente' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0}', StageReply::FIELD_ABSENT, null],
@@ -2107,6 +2109,190 @@ describe('a payment open: another plan, voice notes and refusals', function () {
     });
 });
 
+describe('the fallback reply of the commercial turn', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        $this->neutral = config('botinker.sales_funnels.guided.unclassified_reply');
+        $this->pointer = 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+        $this->fallback = 'Te entiendo, esas situaciones se trabajan con calma, y el servicio está pensado para acompañarte en ellas.';
+        // A reply that cannot go out unclassified: too long for the strict shape.
+        $this->long = str_repeat('Te entiendo, cada situación es distinta y merece verse con calma. ', 8);
+        $this->logged = fn () => Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::any());
+    });
+
+    it('sends the main reply when it is valid, and never the fallback', function () {
+        $this->turns = [gfJson('Te acompaño por WhatsApp durante tu suscripción.', question: 'comercial', fallback: $this->fallback)];
+
+        gfSay('¿Esto cómo funciona?');
+
+        expect(gfLast())->toStartWith('Te acompaño por WhatsApp durante tu suscripción.')->not->toContain($this->fallback);
+    });
+
+    it('sends the fallback alone for a message it did not classify, with no plans, and the free reply stays', function () {
+        Log::spy();
+        $this->turns = [gfJson($this->long, fallback: $this->fallback)];
+
+        gfSay('Uno queda mudo frente a ella, gracias por los consejos');
+
+        expect(gfLast())->toBe($this->fallback)->not->toContain('$9.900')->not->toContain($this->pointer)
+            ->and(gfTurns())->toBe(0)->and(Payment::count())->toBe(0);
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['fallback'] === 'model' && $context['fallback_discarded'] === null));
+    });
+
+    it('sends the fallback instead of how to ask for the plans when a commercial wording is discarded right after them', function () {
+        gfSay('Planes');
+        $this->turns = [gfJson("Mira:\n- Primero esto", question: 'comercial', fallback: $this->fallback)];
+
+        gfSay('¿Y eso cómo me ayuda?');
+
+        expect(gfLast())->toBe($this->fallback)->not->toContain($this->pointer);
+    });
+
+    it('adds the plans after the fallback of a commercial question when they were not shown recently', function () {
+        $this->travel(25)->hours();
+        $this->turns = [gfJson("Mira:\n- Primero esto", question: 'comercial', fallback: $this->fallback)];
+
+        gfSay('¿Y eso cómo me ayuda?');
+
+        expect(gfLast())->toStartWith($this->fallback."\n\n")->toContain('$9.900')->toContain('$19.900');
+    });
+
+    it('goes back to the fixed text when the fallback is invalid or empty', function (?string $fallback, string $reason) {
+        Log::spy();
+        $this->turns = [gfJson($this->long, fallback: $fallback)];
+
+        gfSay('Uno queda mudo frente a ella');
+
+        expect(gfLast())->toBe($this->neutral);
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['fallback'] === 'fixed' && $context['fallback_discarded'] === $reason));
+    })->with([
+        'vacío' => [null, 'empty'],
+        'en blanco' => ['   ', 'empty'],
+        'con instrucciones' => ['Prueba hablarle con calma y mírala a los ojos.', 'instruction'],
+        'con una lista' => ["Te ayudo con:\n- Seguridad\n- Confianza", 'list'],
+        'con un precio' => ['El servicio cuesta $9.900 y te acompaña.', 'currency'],
+        'con una garantía' => ['Te garantizamos que el servicio te funcionará.', 'unbacked_claim'],
+        'con una oferta' => ['El servicio te acompaña; activa tu suscripción hoy.', 'commercial'],
+        'demasiado larga' => [str_repeat('El servicio te acompaña con calma. ', 10), 'too_long'],
+        'demasiadas frases' => ['Te entiendo. Es normal. El servicio te acompaña.', 'too_many_sentences'],
+    ]);
+
+    it('goes back to the fixed text when the fallback says again what the conversation already said', function () {
+        Log::spy();
+        gfSeedTurn('tema', 'Hola', $this->fallback);
+        $this->turns = [gfJson($this->long, fallback: '¡Te entiendo! Esas situaciones se trabajan con calma, y el servicio está pensado para acompañarte en ellas.')];
+
+        gfSay('Uno queda mudo frente a ella');
+
+        expect(gfLast())->toBe($this->neutral);
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['fallback_discarded'] === 'repeated'));
+    });
+
+    it('never adds the payment reminder to the fallback with a payment open', function (string $turn) {
+        gfSay('Quiero el semanal');
+        $this->turns = [$turn];
+
+        gfSay('¿Y eso cómo me ayuda?');
+
+        expect(gfLast())->toBe($this->fallback)->not->toContain('sigue pendiente')->and(Payment::count())->toBe(1);
+    })->with(fn () => [
+        'sin clasificar' => [gfJson(str_repeat('Te entiendo, cada situación es distinta. ', 8), fallback: 'Te entiendo, esas situaciones se trabajan con calma, y el servicio está pensado para acompañarte en ellas.')],
+        'comercial descartado' => [gfJson("Mira:\n- Primero esto", question: 'comercial', fallback: 'Te entiendo, esas situaciones se trabajan con calma, y el servicio está pensado para acompañarte en ellas.')],
+    ]);
+
+    it('leaves the free reply, refusals, courtesies, purchases and the limit as they were', function () {
+        // A request for content: the free reply.
+        $this->turns = [gfJson('', question: 'contenido', fallback: $this->fallback)];
+        $this->replies = [gfJson('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')];
+        gfSay('¿Cómo le hablo a una chica en un bar?');
+        expect(gfLast())->toStartWith('CONTENIDO-DE-LA-RESPUESTA-GRATUITA')->not->toContain($this->fallback);
+
+        // A refusal whose reply cannot go out: its own fixed reply.
+        $this->turns = [gfJson("Tranquilo:\n- Respira", question: 'rechazo', fallback: $this->fallback)];
+        gfSay('Qué rabia');
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.decline_reply'));
+
+        // A courtesy whose reply cannot go out: its own fixed reply.
+        $this->turns = [gfJson(str_repeat('Con gusto te acompaño. ', 25), question: 'cortesia', fallback: $this->fallback)];
+        gfSay('Gracias');
+        expect(gfLast())->toBe(config('botinker.sales_funnels.guided.courtesy_reply'));
+
+        // No free reply left: the limit, never the fallback.
+        $this->turns = [gfJson($this->long, fallback: $this->fallback)];
+        gfSay('Uno queda mudo frente a ella');
+        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->not->toContain($this->fallback);
+
+        // A purchase: the payment flow.
+        $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95, 'comercial', $this->fallback)];
+        gfSay('Va, me quedo con esto');
+        expect(gfLast())->toContain('¿Qué plan de «Asesor» quieres?')->not->toContain($this->fallback);
+    });
+
+    it('sends the same fallback once when the message is retried, with no second model call', function () {
+        $this->turns = [gfJson($this->long, fallback: $this->fallback)];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Uno queda mudo frente a ella', 'wamid.respaldo', 'text', null))->toThrow(RuntimeException::class);
+
+        $this->whatsAppDown = false;
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Uno queda mudo frente a ella', 'wamid.respaldo', 'text', null);
+
+        expect($this->turnPrompts)->toHaveCount(1)->and(gfLast())->toBe($this->fallback)
+            ->and(WhatsAppMessage::where('role', 'assistant')->where('content', $this->fallback)->count())->toBe(1);
+    });
+
+    it('asks for no fallback when it is turned off, and keeps the fixed texts', function () {
+        config(['botinker.sales_funnels.guided.fallback_reply.enabled' => false]);
+        $this->turns = [gfJson($this->long, fallback: $this->fallback)];
+
+        gfSay('Uno queda mudo frente a ella');
+
+        $format = collect(Http::recorded(fn (Request $r) => str_contains($r->url(), 'api.openai.com') && str_contains($r->data()['messages'][0]['content'], 'Este es un turno comercial')))->sole()[0]->data()['response_format'];
+
+        expect(gfLast())->toBe($this->neutral)
+            ->and($format['json_schema']['schema']['required'])->toBe(['reply', 'intent', 'confidence', 'question'])
+            ->and(gfLastTurnPrompt())->not->toContain('fallback_reply');
+    });
+
+    it('never sends an empty message when a configured text is missing: the Core\'s own text goes', function () {
+        Log::spy();
+        config(['botinker.sales_funnels.guided.unclassified_reply' => null, 'botinker.sales_funnels.guided.fallback_reply.enabled' => false]);
+        $this->turns = [gfJson($this->long)];
+
+        gfSay('Uno queda mudo frente a ella');
+
+        expect(gfLast())->toBe($this->pointer);
+        Log::shouldHaveReceived('warning')->with('FUNNEL_EMPTY_REPLY', Mockery::any());
+    });
+
+    it('works the same for a product of another domain, built only from that product\'s information', function () {
+        $store = makeStore(['conversation_mode' => Store::MODE_KNOWLEDGE, 'payment_instructions' => 'INSTRUCCIONES-PAGO-2', 'system_prompt' => 'PERSONA-OTRA-TIENDA']);
+        Topic::create(['store_id' => $store->id, 'key' => 'cocina', 'label' => 'Cocina', 'instructions' => 'INSTRUCCIONES-COCINA']);
+        $product = Product::create([
+            'store_id' => $store->id, 'domain_key' => 'cocina', 'name' => 'Recetario', 'description' => 'DESCRIPCION-RECETARIO', 'price' => 1, 'stock' => 1,
+            'access_mode' => Product::ACCESS_SUBSCRIPTION, 'ai_sales_strategy' => 'SERVICIO-COCINA',
+        ]);
+        Plan::create(['product_id' => $product->id, 'name' => 'Anual', 'price' => 50000, 'duration_days' => 365]);
+        $this->versions->publish($product, GuidedFunnel::definition('INSTRUCCION-RECETARIO', 1));
+        $fallback = 'Organizar las comidas de la semana cuesta, y el recetario está pensado justo para hacerlo más sencillo.';
+        $this->turns = [gfJson($this->long, fallback: $fallback)];
+
+        ProcessWhatsAppMessage::dispatchSync($store->fresh(), '573001110000', 'Me cuesta mucho organizar las comidas', 'wamid.in.cocina', 'text', null);
+
+        expect(gfLast())->toBe($fallback)
+            ->and(gfLastTurnPrompt())->toContain('DESCRIPCION-RECETARIO')->toContain('INSTRUCCION-RECETARIO')
+            ->toContain(config('botinker.sales_funnels.guided.fallback_reply.instruction'))
+            ->not->toContain('DESCRIPCION-PRODUCTO');
+    });
+
+    it('reads the fallback from the answer, never a [Planes] in it as a request for the plans', function () {
+        $reply = StageReply::parse(json_encode(['reply' => 'Hola.', 'intent' => null, 'confidence' => 0, 'question' => null, 'fallback_reply' => ' Te acompaño. [Planes] ']), true, ['presentar_oferta' => 'x']);
+
+        expect($reply->fallback)->toBe('Te acompaño.')->and($reply->intent)->toBeNull()
+            ->and(StageReply::parse(gfJson('Hola.'), true, [])->fallback)->toBeNull();
+    });
+});
+
 describe('the structured answer of the commercial turn', function () {
     beforeEach(function () {
         gfPublish(free: 1);
@@ -2123,7 +2309,7 @@ describe('the structured answer of the commercial turn', function () {
         $schema = $format['json_schema']['schema'];
 
         expect($format['type'])->toBe('json_schema')->and($format['json_schema']['strict'])->toBeTrue()
-            ->and($schema['required'])->toBe(['reply', 'intent', 'confidence', 'question'])
+            ->and($schema['required'])->toBe(['reply', 'intent', 'confidence', 'question', 'fallback_reply'])
             ->and($schema['additionalProperties'])->toBeFalse()
             ->and($schema['properties']['question']['anyOf'])->toBe([['type' => 'string', 'enum' => ['comercial', 'contenido', 'cortesia', 'rechazo']], ['type' => 'null']])
             ->and($schema['properties']['intent']['anyOf'][0]['enum'])->toBe([GuidedFunnel::INTENT_BUY, GuidedFunnel::INTENT_OFFER]);

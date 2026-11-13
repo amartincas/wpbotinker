@@ -311,7 +311,8 @@ class PromptAssembler
             // A commercial turn's reading of the message (StageReply::QUESTION_*) is part of the same JSON.
             $prompt .= "\n\n### FORMATO DE RESPUESTA\n"
                 .'Responde EXCLUSIVAMENTE con un JSON, sin texto adicional: {"reply": "texto para el cliente", "intent": "clave" o null, "confidence": número de 0 a 1'
-                .($commercialTurn ? ', "question": "'.implode('" o "', StageReply::QUESTIONS).'" o null' : '').'}. ';
+                .($commercialTurn ? ', "question": "'.implode('" o "', StageReply::QUESTIONS).'" o null' : '')
+                .($commercialTurn && self::fallbackEnabled() ? ', "fallback_reply": "respuesta alternativa breve"' : '').'}. ';
             $prompt .= $definition->guided
                 ? 'En "intent" propón qué debe hacer el sistema en este momento de la conversación; usa null para seguir conversando. El sistema valida tu propuesta y ejecuta la operación: tú no ejecutas nada.'
                 : 'En "intent" indica cuál de estas intenciones expresa el último mensaje del cliente; usa null si no expresa ninguna con claridad. '
@@ -324,9 +325,20 @@ class PromptAssembler
 
         if ($commercialTurn) {
             $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.commercial_turn')), [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)]);
+
+            if (self::fallbackEnabled()) {
+                $prompt .= ' '.trim((string) config('botinker.sales_funnels.guided.fallback_reply.instruction'));
+            }
         }
 
         return $prompt;
+    }
+
+    /** Whether a commercial turn also writes its fallback reply (config sales_funnels.guided.fallback_reply). */
+    public static function fallbackEnabled(): bool
+    {
+        return (bool) config('botinker.sales_funnels.guided.fallback_reply.enabled', false)
+            && trim((string) config('botinker.sales_funnels.guided.fallback_reply.instruction')) !== '';
     }
 
     /**

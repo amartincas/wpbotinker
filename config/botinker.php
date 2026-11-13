@@ -130,6 +130,18 @@ return [
                 .'Si de verdad no se entiende, usa null y en "reply" pídele en una frase, con naturalidad, que te cuente un poco más.',
             // What a greeting or a thanks gets when no reply of the model may go out. Generic, for every domain.
             'courtesy_reply' => 'Con gusto. Aquí estoy si quieres saber algo más del servicio.',
+            // A second, safer answer the commercial turn writes in the same call, used only when its reply cannot go
+            // out: a short acknowledgment tied to the product's general benefit, from the product's own information.
+            // Generic, for every domain. Checked before it goes out; a repeated or invalid one falls back to the fixed texts.
+            'fallback_reply' => [
+                'enabled' => true,
+                'instruction' => 'En "fallback_reply" escribe siempre una respuesta alternativa, por si tu respuesta principal no pudiera enviarse: '
+                    .'una o dos frases breves que reconozcan con naturalidad lo que el cliente dijo y lo relacionen con el beneficio general del servicio, '
+                    .'tomado solo de la información del producto de arriba. No finjas haber resuelto su consulta, no des consejos, pasos ni ejemplos, '
+                    .'no prometas resultados, no menciones precios, planes ni pagos, no lo invites a comprar y no repitas frases que ya dijiste en la conversación.',
+                'max_characters' => 250,
+                'max_sentences' => 2,
+            ],
             // What a refusal, frustration or anger gets when no reply of the model may go out: no offer, no payment.
             'decline_reply' => 'Entiendo. Si en otro momento quieres retomarlo, aquí estaré.',
             // What a message the model did not classify gets while the customer has a free reply left: neither

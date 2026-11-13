@@ -37,6 +37,7 @@ final class StageReply
     /**
      * @param  string|null  $question  how the model read the message after the free replies: one of the QUESTION_ values, or null
      * @param  string  $questionField  how the answer carried it (FIELD_ values), whatever $question ended up being
+     * @param  string|null  $fallback  the safer answer the commercial turn writes for when its reply cannot go out; unchecked
      */
     private function __construct(
         public readonly ?string $reply,
@@ -44,30 +45,35 @@ final class StageReply
         public readonly float $confidence,
         public readonly ?string $question = null,
         public readonly string $questionField = self::FIELD_ABSENT,
+        public readonly ?string $fallback = null,
     ) {}
 
     /**
      * The JSON schema of a commercial turn's answer (Structured Outputs):
      * every field present, an intent among the funnel's or null, and a
      * question among the QUESTION_ values or null when it cannot be told. It
-     * fixes the shape only: parse() still validates every value.
+     * fixes the shape only: parse() still validates every value. With a
+     * fallback, its text too: a strict schema has no optional fields, so it is
+     * always written, and only used when the reply cannot go out.
      *
      * @param  array<string, string>  $intents  the intents of the funnel
      * @return array{name: string, schema: array<string, mixed>}
      */
-    public static function schema(array $intents): array
+    public static function schema(array $intents, bool $fallback = false): array
     {
         $oneOf = fn (array $values) => ['anyOf' => [['type' => 'string', 'enum' => array_values($values)], ['type' => 'null']]];
+        $properties = [
+            'reply' => ['type' => 'string'],
+            'intent' => $intents !== [] ? $oneOf(array_keys($intents)) : ['type' => 'null'],
+            'confidence' => ['type' => 'number'],
+            'question' => $oneOf(self::QUESTIONS),
+            ...($fallback ? ['fallback_reply' => ['type' => 'string']] : []),
+        ];
 
         return ['name' => 'commercial_turn', 'schema' => [
             'type' => 'object',
-            'properties' => [
-                'reply' => ['type' => 'string'],
-                'intent' => $intents !== [] ? $oneOf(array_keys($intents)) : ['type' => 'null'],
-                'confidence' => ['type' => 'number'],
-                'question' => $oneOf(self::QUESTIONS),
-            ],
-            'required' => ['reply', 'intent', 'confidence', 'question'],
+            'properties' => $properties,
+            'required' => array_keys($properties),
             'additionalProperties' => false,
         ]];
     }
@@ -113,6 +119,10 @@ final class StageReply
         }
 
         $reply = is_string($decoded['reply'] ?? null) ? self::unmarked($decoded['reply']) : '';
+        // Only the reply asks for the plans: a marker in the fallback is no request.
+        $marked = is_string($decoded['reply'] ?? null) && preg_match(self::PLANS_MARKER, $decoded['reply']) === 1;
+        $fallback = is_string($decoded['fallback_reply'] ?? null) ? self::unmarked($decoded['fallback_reply']) : '';
+        $fallback = $fallback !== '' ? $fallback : null;
         $intent = $decoded['intent'] ?? null;
         $known = is_string($intent) && isset($intents[$intent]);
         $confidence = is_numeric($decoded['confidence'] ?? null) ? max(0.0, min(1.0, (float) $decoded['confidence'])) : 0.0;
@@ -127,10 +137,10 @@ final class StageReply
         };
 
         if (! $known && $marked && isset($intents[GuidedFunnel::INTENT_OFFER])) {
-            return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question, $field);
+            return new self($reply !== '' ? $reply : null, GuidedFunnel::INTENT_OFFER, 1.0, $question, $field, $fallback);
         }
 
-        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question, $field);
+        return new self($reply !== '' ? $reply : null, $known ? $intent : null, $known ? $confidence : 0.0, $question, $field, $fallback);
     }
 
     /** The text without the marker, and without the blank space it leaves. */

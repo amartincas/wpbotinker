@@ -38,6 +38,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 
@@ -66,6 +67,9 @@ class ConversationPipeline
 
     /** Characters kept of the question a clarification interrupted. */
     private const MAX_ORIGIN_LENGTH = 1000;
+
+    /** How close (percent) a fallback reply may come to a recent reply before it counts as said again. */
+    private const REPEATED_SIMILARITY = 85;
 
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
@@ -553,7 +557,7 @@ class ConversationPipeline
                         $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true),
                         $this->history($store, $from, $domain->key()),
                         // The shape of the answer, where the provider supports it; its values are still validated.
-                        StageReply::schema($step->definition->intents),
+                        StageReply::schema($step->definition->intents, PromptAssembler::fallbackEnabled()),
                     );
                     $this->rememberSample($store, $turnKey, $raw);
                 }
@@ -648,8 +652,28 @@ class ConversationPipeline
             default => $this->claims->limitReplyViolation($reply->reply, $product->name, (array) $product->aliases),
         };
 
+        $literalReason = $literal['reason'] ?? null;
+        $sendsWording = ! in_array($literalReason, ['answered', 'no_match'], true) && $outcome !== null && $violation === null;
+
+        // Where a fixed text would go instead of the reply (a message not classified, a commercial wording that
+        // cannot go out), the model's own safer answer of the same call goes, when it passes: checked like any
+        // commercial wording, short, never commercial, never what the conversation already said.
+        $fallback = null;
+        $fallbackDiscarded = null;
+
+        if ($free && $canRead && $outcome !== null && ! $sendsWording && ! $courtesy && ! $declined
+            && ! in_array($literalReason, ['answered', 'no_match'], true) && PromptAssembler::fallbackEnabled()) {
+            $fallbackDiscarded = match (true) {
+                $reply->fallback === null => 'empty',
+                default => $this->claims->fallbackReplyViolation($reply->fallback, $product->name, (array) $product->aliases)
+                    ?? ($this->repeatsConversation($store, $from, $domain->key(), $reply->fallback) ? 'repeated' : null),
+            };
+            $fallback = $fallbackDiscarded === null ? $reply->fallback : null;
+        }
+
         if ($outcome !== null) {
-            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literal['reason'] ?? null] + $shape);
+            Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literalReason] + $shape
+                + ['fallback' => $fallback !== null ? 'model' : ($fallbackDiscarded !== null ? 'fixed' : null), 'fallback_discarded' => $fallbackDiscarded]);
         } elseif (! $canRead) {
             Log::info('FUNNEL_LIMIT_READS_EXHAUSTED', ['store_id' => $store->id, 'product_id' => $product->id]);
         }
@@ -663,9 +687,6 @@ class ConversationPipeline
         // Plans just shown, or a payment already open: an answer goes alone, without inviting to them again.
         $answered = fn (string $answer) => $payment !== null || $this->commerce->offerRecentlyShown($product, $conversation) ? $answer : $answer."\n\n".$offer();
 
-        $literalReason = $literal['reason'] ?? null;
-        $sendsWording = ! in_array($literalReason, ['answered', 'no_match'], true) && $outcome !== null && $violation === null;
-
         $text = match (true) {
             $literalReason === 'answered' => $answered($literal['text']),
             $literalReason === 'no_match' => trim((string) config('botinker.sales_funnels.guided.undocumented_reply'))."\n\n".$offer(),
@@ -676,15 +697,28 @@ class ConversationPipeline
             // A message the model read but did not classify, while a free reply is left: an invitation to say
             // more, neither the plans nor content, and the free reply stays. A message no read was left for is
             // not invited to say more, as nothing would read it. Without a free reply, the limit as always.
-            $free && $canRead && ! $commercial => GuidedFunnel::unclassifiedReply($funnel->definition ?? []) ?? trim((string) config('botinker.sales_funnels.guided.unclassified_reply')),
+            $free && $canRead && ! $commercial => $fallback ?? GuidedFunnel::unclassifiedReply($funnel->definition ?? []) ?? trim((string) config('botinker.sales_funnels.guided.unclassified_reply')),
+            // A commercial question whose wording cannot go out: the safer answer, with the plans as any answer gets them.
+            $fallback !== null => $answered($fallback),
             // The fixed reply says the free replies are over only when they are.
             $free => $offer(),
             default => trim((string) config('botinker.sales_funnels.guided.limit_reply'))."\n\n".$offer(),
         };
 
+        // A configured text that came out empty (a deploy whose configuration is not cached yet, a key removed):
+        // WhatsApp refuses an empty message and the job would fail. The Core's own text goes instead.
+        if (trim($text) === '') {
+            Log::warning('FUNNEL_EMPTY_REPLY', ['store_id' => $store->id, 'product_id' => $product->id]);
+            $text = $offer();
+        }
+
+        $text = trim($text);
+
         // Observed only, and before the send: nothing after it may fail the job, or its retry would send the reply again.
         if ($freeWording && $sendsWording) {
             $this->observeClaims($store, $domain, $product, $step, $reply->reply, $wamid);
+        } elseif ($fallback !== null && str_starts_with($text, $fallback)) {
+            $this->observeClaims($store, $domain, $product, $step, $fallback, $wamid);
         }
 
         $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
@@ -1133,6 +1167,32 @@ class ConversationPipeline
             ->value('content');
 
         return is_string($content) && trim($content) !== '' ? $content : null;
+    }
+
+    /**
+     * Whether the text says again what one of the conversation's recent
+     * replies said: the same words, one inside the other, or nearly the same,
+     * once case, accents and punctuation are aside.
+     */
+    private function repeatsConversation(Store $store, string $from, string $domainKey, string $text): bool
+    {
+        $plain = fn (string $value) => trim((string) preg_replace('/[^a-z0-9]+/', ' ', Str::ascii(mb_strtolower($value))));
+        $candidate = $plain($text);
+
+        foreach ($this->history($store, $from, $domainKey) as $message) {
+            if ($message['role'] !== 'assistant' || ($said = $plain((string) $message['content'])) === '') {
+                continue;
+            }
+
+            similar_text($candidate, $said, $percent);
+
+            if ($candidate === $said || $percent >= self::REPEATED_SIMILARITY
+                || (mb_strlen($candidate) >= 20 && (str_contains($said, $candidate) || str_contains($candidate, $said)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function history(Store $store, string $from, ?string $domainKey): array

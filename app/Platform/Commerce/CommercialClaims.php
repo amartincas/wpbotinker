@@ -46,6 +46,9 @@ final class CommercialClaims
     /** Shorter names are too likely to be ordinary words. */
     private const MIN_NAME_LENGTH = 3;
 
+    /** Words of buying or paying a fallback reply never uses (fallbackReplyViolation()). */
+    private const PURCHASE_TERMS = ['pagar', 'pago', 'pagos', 'comprar', 'compra', 'compras', 'precio', 'precios', 'tarifa', 'tarifas', 'mensualidad', 'suscripcion', 'suscribete', 'suscribirte', 'oferta', 'ofertas', 'descuento', 'promocion'];
+
     /** The kind of price or amount the text states, or null. */
     public function amount(string $text): ?string
     {
@@ -209,6 +212,36 @@ final class CommercialClaims
         return match (true) {
             mb_strlen($text) > (int) ($rules['max_characters'] ?? 400) => 'too_long',
             count($sentences) > (int) ($rules['max_sentences'] ?? 4) => 'too_many_sentences',
+            default => null,
+        };
+    }
+
+    /**
+     * Why a commercial turn's fallback reply (config
+     * sales_funnels.guided.fallback_reply) cannot go out, or null. Nothing
+     * commercialWordingViolation() forbids (content, guarantees, amounts),
+     * within its own length, and nothing commercial at all: no plans,
+     * subscription, purchase or payment, so it never offers anything.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function fallbackReplyViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        if ($reason = $this->commercialWordingViolation($text, $productName, $aliases)) {
+            return $reason;
+        }
+
+        $limits = (array) config('botinker.sales_funnels.guided.fallback_reply', []);
+        $plain = Str::ascii(mb_strtolower($text));
+        $sentences = array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $text)), fn (string $sentence) => $sentence !== '');
+        // Amounts and prices with figures are funnelViolation()'s; words such as «cuesta» or «valor» also mean «it is
+        // hard» or «worth»: only the unambiguous words of plans, buying and paying count here.
+        $commercial = [...(array) config('botinker.sales_funnels.guided.after_limit_rules.commercial_terms', []), ...self::PURCHASE_TERMS];
+
+        return match (true) {
+            mb_strlen($text) > (int) ($limits['max_characters'] ?? 250) => 'too_long',
+            count($sentences) > (int) ($limits['max_sentences'] ?? 2) => 'too_many_sentences',
+            $this->mentions($plain, $commercial) => 'commercial',
             default => null,
         };
     }
