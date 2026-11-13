@@ -192,6 +192,75 @@ class SalesFunnelRunner
     }
 
     /**
+     * Whether this message may carry the conversation's contextual close
+     * (FunnelStates::claimClosing()), once every closing_reply.interval_hours.
+     * Without certainty it may not: the safer replies go instead.
+     */
+    public function claimClosing(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid): ?string
+    {
+        try {
+            return $this->states->claimClosing($conversation, $product, $funnel, $stage, $wamid, self::closingIntervalHours());
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_CLOSING_NOT_CLAIMED', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+
+            return null;
+        }
+    }
+
+    /** Whether this message's close already went out: a later delivery of it sends nothing again. */
+    public function closingSent(Conversation $conversation, Product $product, ?string $wamid): bool
+    {
+        try {
+            return $this->states->closingSent($conversation, $product, $wamid);
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_CLOSING_NOT_READ', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+
+            return false;
+        }
+    }
+
+    /**
+     * The close went out. A failure only leaves it pending, which holds the
+     * interval as well: the safe side, and the job must not fail after a send.
+     */
+    public function confirmClosing(Conversation $conversation, Product $product, ?string $wamid): void
+    {
+        try {
+            $this->states->confirmClosing($conversation, $product, $wamid, self::closingIntervalHours());
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_CLOSING_NOT_CONFIRMED', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
+    }
+
+    /**
+     * The close was not sent: given back, held for this message's retry for
+     * $holdMinutes. A failure only leaves it pending: no other close this interval.
+     */
+    public function releaseClosing(Conversation $conversation, Product $product, ?string $wamid, int $holdMinutes): void
+    {
+        try {
+            $this->states->releaseClosing($conversation, $product, $wamid, $holdMinutes);
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_CLOSING_NOT_RELEASED', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
+    }
+
+    /** A refusal keeps the contextual close away for an interval; a failure never fails the turn. */
+    public function markDeclined(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage): void
+    {
+        try {
+            $this->states->markDeclined($conversation, $product, $funnel, $stage, self::closingIntervalHours());
+        } catch (Throwable $e) {
+            Log::error('FUNNEL_DECLINE_NOT_MARKED', ['conversation_id' => $conversation->id, 'product_id' => $product->id, 'error' => $e::class]);
+        }
+    }
+
+    private static function closingIntervalHours(): int
+    {
+        return max(1, (int) config('botinker.sales_funnels.guided.closing_reply.interval_hours', 24));
+    }
+
+    /**
      * Only after the customer got the reply, and outside any transaction (see
      * FunnelStates). The message already went out: a failure here must not
      * fail the job, or a retry would send it again.

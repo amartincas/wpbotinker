@@ -23,6 +23,7 @@ use App\Platform\Contracts\DomainModule;
 use App\Platform\Contracts\ProvidesRetrievalGuide;
 use App\Platform\Domains\DomainRegistry;
 use App\Platform\Funnel\FunnelDefinition;
+use App\Platform\Funnel\FunnelStates;
 use App\Platform\Funnel\FunnelStep;
 use App\Platform\Funnel\GuidedFunnel;
 use App\Platform\Funnel\SalesFunnelRunner;
@@ -543,6 +544,8 @@ class ConversationPipeline
             $free ? $conversation->reactivation_episode_at?->format('Y-m-d H:i:s') : null,
         );
         $canRead = $readKind !== null;
+        // Without free replies nor a payment open, a request for content is asked for the contextual close.
+        $closingPrompt = ! $free && $access->openPayment === null && ! GuidedFunnel::declines($messageBody);
 
         if ($canRead) {
             try {
@@ -554,7 +557,7 @@ class ConversationPipeline
                 if ($raw === null) {
                     $raw = AIServiceFactory::make($store)->getResponse(
                         $messageBody,
-                        $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true),
+                        $this->prompts->buildFunnelStage($store, $domain, $product, $step->definition, $step->stage, $facts, collect(), null, null, $this->commerce->planSummary($product), commercialTurn: true, closing: $closingPrompt),
                         $this->history($store, $from, $domain->key()),
                         // The shape of the answer, where the provider supports it; its values are still validated.
                         StageReply::schema($step->definition->intents, PromptAssembler::fallbackEnabled()),
@@ -584,6 +587,11 @@ class ConversationPipeline
                 GuidedFunnel::declineEpisode($conversation);
             } catch (Throwable $e) {
                 Log::warning('REACTIVATION_DECLINE_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
+            }
+
+            // Nor a contextual close for an interval: last_session_at moves with every message, so the state keeps it.
+            if (PromptAssembler::closingEnabled()) {
+                $this->funnels->markDeclined($conversation, $product, $funnel, $step->stage->key);
             }
         }
         // With a payment open, its own short reminder stands for the plans: the customer already chose one.
@@ -655,17 +663,68 @@ class ConversationPipeline
         $literalReason = $literal['reason'] ?? null;
         $sendsWording = ! in_array($literalReason, ['answered', 'no_match'], true) && $outcome !== null && $violation === null;
 
+        // Out of free replies, what would get the fixed reply (a request for content, a message not classified,
+        // a commercial wording that cannot go out) gets the safer replies first: the model's contextual close
+        // to the first two, once per interval, then the fallback reply, then the fixed reply.
+        $closingTurn = ! $free && $outcome !== null && PromptAssembler::closingEnabled() && ! $courtesy && ! $declined
+            && ! in_array($literalReason, ['answered', 'no_match'], true) && ($content || $reply->question === null || ($commercial && ! $sendsWording));
+        $closing = null;
+        $closingDiscarded = null;
+
+        if ($closingTurn && ! $commercial) {
+            // A later delivery of a message whose close WhatsApp already took: nothing goes out again. Checked
+            // first, as the history that now holds that close would read it as repeated.
+            if ($this->funnels->closingSent($conversation, $product, $wamid)) {
+                Log::info('FUNNEL_CLOSING_ALREADY_SENT', ['store_id' => $store->id, 'product_id' => $product->id]);
+                $this->forgetSample($store, $turnKey);
+
+                return;
+            }
+
+            // The close takes the place of the strict reply after the free replies.
+            $sendsWording = false;
+            $closingDiscarded = match (true) {
+                $payment !== null => 'payment',
+                GuidedFunnel::declines($messageBody) => 'declined',
+                $reply->reply === null => 'empty',
+                default => $this->claims->closingReplyViolation($reply->reply, $product->name, (array) $product->aliases)
+                    ?? ($this->repeatsConversation($store, $from, $domain->key(), $reply->reply) ? 'repeated' : null),
+            };
+
+            if ($closingDiscarded === null) {
+                $claim = $this->funnels->claimClosing($conversation, $product, $funnel, $step->stage->key, $wamid);
+
+                // The same, should it have been confirmed in between.
+                if ($claim === FunnelStates::CLOSING_SENT) {
+                    Log::info('FUNNEL_CLOSING_ALREADY_SENT', ['store_id' => $store->id, 'product_id' => $product->id]);
+                    $this->forgetSample($store, $turnKey);
+
+                    return;
+                }
+
+                $closing = $claim === FunnelStates::CLOSING_CLAIMED ? $reply->reply : null;
+                $closingDiscarded = match ($claim) {
+                    FunnelStates::CLOSING_CLAIMED => null,
+                    FunnelStates::CLOSING_DECLINED => 'declined',
+                    default => 'interval',
+                };
+            }
+        }
+
         // Where a fixed text would go instead of the reply (a message not classified, a commercial wording that
         // cannot go out), the model's own safer answer of the same call goes, when it passes: checked like any
-        // commercial wording, short, never commercial, never what the conversation already said.
+        // commercial wording, short, never commercial, never what the conversation already said. Out of free
+        // replies, also about the service in every sentence, so a bare tip never stands for a close.
         $fallback = null;
         $fallbackDiscarded = null;
 
-        if ($free && $canRead && $outcome !== null && ! $sendsWording && ! $courtesy && ! $declined
+        if (($free || $closingTurn) && $closing === null && $canRead && $outcome !== null && ! $sendsWording && ! $courtesy && ! $declined
             && ! in_array($literalReason, ['answered', 'no_match'], true) && PromptAssembler::fallbackEnabled()) {
             $fallbackDiscarded = match (true) {
                 $reply->fallback === null => 'empty',
-                default => $this->claims->fallbackReplyViolation($reply->fallback, $product->name, (array) $product->aliases)
+                default => ($free
+                    ? $this->claims->fallbackReplyViolation($reply->fallback, $product->name, (array) $product->aliases)
+                    : $this->claims->closingFallbackViolation($reply->fallback, $product->name, (array) $product->aliases))
                     ?? ($this->repeatsConversation($store, $from, $domain->key(), $reply->fallback) ? 'repeated' : null),
             };
             $fallback = $fallbackDiscarded === null ? $reply->fallback : null;
@@ -673,7 +732,8 @@ class ConversationPipeline
 
         if ($outcome !== null) {
             Log::info('FUNNEL_LIMIT_READ', $read + ['action' => null, 'discarded' => $violation, 'commercial_reason' => $literalReason] + $shape
-                + ['fallback' => $fallback !== null ? 'model' : ($fallbackDiscarded !== null ? 'fixed' : null), 'fallback_discarded' => $fallbackDiscarded]);
+                + ['fallback' => $fallback !== null ? 'model' : ($fallbackDiscarded !== null ? 'fixed' : null), 'fallback_discarded' => $fallbackDiscarded]
+                + ['closing' => $closingTurn ? ($closing !== null ? 'model' : ($fallback !== null ? 'fallback' : 'fixed')) : null, 'closing_discarded' => $closingDiscarded]);
         } elseif (! $canRead) {
             Log::info('FUNNEL_LIMIT_READS_EXHAUSTED', ['store_id' => $store->id, 'product_id' => $product->id]);
         }
@@ -694,10 +754,13 @@ class ConversationPipeline
             $courtesy => trim((string) config('botinker.sales_funnels.guided.courtesy_reply')),
             $declined => trim((string) config('botinker.sales_funnels.guided.decline_reply')),
             $sendsWording => $answered($reply->reply),
+            $closing !== null => $answered($closing),
             // A message the model read but did not classify, while a free reply is left: an invitation to say
             // more, neither the plans nor content, and the free reply stays. A message no read was left for is
             // not invited to say more, as nothing would read it. Without a free reply, the limit as always.
             $free && $canRead && ! $commercial => $fallback ?? GuidedFunnel::unclassifiedReply($funnel->definition ?? []) ?? trim((string) config('botinker.sales_funnels.guided.unclassified_reply')),
+            // Out of free replies the fallback invites nobody: how to ask for the plans, or the payment's reminder, always follows.
+            $fallback !== null && ! $free => $fallback."\n\n".$offer(),
             // A commercial question whose wording cannot go out: the safer answer, with the plans as any answer gets them.
             $fallback !== null => $answered($fallback),
             // The fixed reply says the free replies are over only when they are.
@@ -717,11 +780,28 @@ class ConversationPipeline
         // Observed only, and before the send: nothing after it may fail the job, or its retry would send the reply again.
         if ($freeWording && $sendsWording) {
             $this->observeClaims($store, $domain, $product, $step, $reply->reply, $wamid);
+        } elseif ($closing !== null) {
+            $this->observeClaims($store, $domain, $product, $step, $closing, $wamid);
         } elseif ($fallback !== null && str_starts_with($text, $fallback)) {
             $this->observeClaims($store, $domain, $product, $step, $fallback, $wamid);
         }
 
-        $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
+        try {
+            $this->deliverTurn($store, $from, $messageBody, $text, $domain->key());
+        } catch (Throwable $e) {
+            // Not sent, as far as the Core can tell: the close is given back, held for this message's retry
+            // within its retry window, as WhatsApp may have taken it after all (FunnelStates::claimClosing()).
+            if ($closing !== null) {
+                $this->funnels->releaseClosing($conversation, $product, $wamid, self::SAMPLE_CACHE_MINUTES);
+            }
+
+            throw $e;
+        }
+
+        if ($closing !== null) {
+            $this->funnels->confirmClosing($conversation, $product, $wamid);
+        }
+
         $this->commerce->recordOfferIfSent($conversation, $product, $text);
         $this->forgetSample($store, $turnKey);
     }

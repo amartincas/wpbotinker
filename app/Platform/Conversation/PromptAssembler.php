@@ -237,8 +237,9 @@ class PromptAssembler
      * @param  array<string, mixed>  $facts
      * @param  Collection<int, KnowledgeChunk>  $resources
      * @param  bool  $commercialTurn  a commercial turn of a guided funnel (config sales_funnels.guided.commercial_turn)
+     * @param  bool  $closing  that turn may close in the model's words (config sales_funnels.guided.closing_reply)
      */
-    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $commercialTurn = false): string
+    public function buildFunnelStage(Store $store, DomainModule $domain, Product $product, FunnelDefinition $definition, FunnelStage $stage, array $facts, Collection $resources, ?FreeTurn $freeTurn, ?string $originalQuery, ?string $plans = null, bool $commercialTurn = false, bool $closing = false): string
     {
         $prompt = trim($this->neutralize($store->system_prompt ?? '')) ?: 'You are an assistant.';
 
@@ -324,7 +325,15 @@ class PromptAssembler
         }
 
         if ($commercialTurn) {
-            $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.commercial_turn')), [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)]);
+            // Without free replies nor a payment open, a request for content gets the contextual close instead.
+            $contentReply = $closing && self::closingEnabled()
+                ? config('botinker.sales_funnels.guided.closing_reply.instruction')
+                : config('botinker.sales_funnels.guided.content_reply');
+            $characters = [':characters' => (string) (int) config('botinker.sales_funnels.guided.after_limit_rules.max_characters', 400)];
+            // strtr() never reads again what it put: the content reply gets its own :characters first.
+            $prompt .= "\n\n".strtr(trim((string) config('botinker.sales_funnels.guided.commercial_turn')), [
+                ':content_reply' => strtr(trim((string) $contentReply), $characters),
+            ] + $characters);
 
             if (self::fallbackEnabled()) {
                 $prompt .= ' '.trim((string) config('botinker.sales_funnels.guided.fallback_reply.instruction'));
@@ -332,6 +341,13 @@ class PromptAssembler
         }
 
         return $prompt;
+    }
+
+    /** Whether a commercial turn without free replies may close in the model's words (config sales_funnels.guided.closing_reply). */
+    public static function closingEnabled(): bool
+    {
+        return (bool) config('botinker.sales_funnels.guided.closing_reply.enabled', false)
+            && trim((string) config('botinker.sales_funnels.guided.closing_reply.instruction')) !== '';
     }
 
     /** Whether a commercial turn also writes its fallback reply (config sales_funnels.guided.fallback_reply). */

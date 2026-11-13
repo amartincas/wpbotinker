@@ -69,6 +69,7 @@ beforeEach(function () {
     $this->modelDown = false;
     $this->selectorDown = false;
     $this->whatsAppDown = false;
+    $this->whatsAppAmbiguous = false;
     $this->schemaRefused = false;
     $this->transcriptions = [];
 
@@ -128,6 +129,11 @@ beforeEach(function () {
             $this->prompts[] = $system;
 
             return Http::response(['choices' => [['message' => ['content' => array_shift($this->replies) ?? gfJson('RESPUESTA-DEL-MODELO')]]]]);
+        }
+
+        // Ambiguous: Meta answers 200 but with no message id, so the Core cannot tell the message went out.
+        if ($this->whatsAppAmbiguous) {
+            return Http::response(['messages' => []]);
         }
 
         return $this->whatsAppDown
@@ -785,6 +791,9 @@ describe('the commercial replies after the limit', function () {
     });
 
     it('sends up to five commercial replies from the model, spending no free reply, and then the fixed message', function () {
+        // The reads, with the strict replies of before: the contextual close goes once per interval (its own tests).
+        config(['botinker.sales_funnels.guided.closing_reply.enabled' => false]);
+
         foreach (range(1, 5) as $read) {
             $this->turns = [gfJson($this->comercial)];
 
@@ -1973,7 +1982,7 @@ describe('a message the model did not classify', function () {
 
         Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['question_field'] === $field && $context['question'] === $question
             && is_int($context['reply_characters'])
-            && array_slice(array_keys($context), -4) === ['question_field', 'reply_characters', 'fallback', 'fallback_discarded']
+            && array_slice(array_keys($context), -6) === ['question_field', 'reply_characters', 'fallback', 'fallback_discarded', 'closing', 'closing_discarded']
             && ! in_array('Te entiendo.', $context, true)));
     })->with([
         'ausente' => ['{"reply": "Te entiendo.", "intent": null, "confidence": 0}', StageReply::FIELD_ABSENT, null],
@@ -2217,10 +2226,10 @@ describe('the fallback reply of the commercial turn', function () {
         gfSay('Gracias');
         expect(gfLast())->toBe(config('botinker.sales_funnels.guided.courtesy_reply'));
 
-        // No free reply left: the limit, never the fallback.
+        // No free reply left, and no close that passes: the fallback, about the service in every sentence, and how to ask for the plans.
         $this->turns = [gfJson($this->long, fallback: $this->fallback)];
         gfSay('Uno queda mudo frente a ella');
-        expect(gfLast())->toStartWith(config('botinker.sales_funnels.guided.limit_reply'))->not->toContain($this->fallback);
+        expect(gfLast())->toBe($this->fallback."\n\nEscribe «planes» para ver los precios o «pagar» para suscribirte.");
 
         // A purchase: the payment flow.
         $this->turns = [gfJson('', GuidedFunnel::INTENT_BUY, 0.95, 'comercial', $this->fallback)];
@@ -2713,6 +2722,8 @@ describe('a reply after the limit, for any product', function () {
     ]);
 
     it('recognizes the product\'s name and aliases in a real conversation, whatever its sector', function (string $name, string $reference) {
+        // The strict reply of before, sent each time: the contextual close goes once per interval (its own tests).
+        config(['botinker.sales_funnels.guided.closing_reply.enabled' => false]);
         $this->product->update(['name' => $name, 'aliases' => ['Método de prueba']]);
         gfPublish(free: 1);
         gfSay('Uno');
@@ -2906,5 +2917,282 @@ describe('what stays as it was', function () {
         gfSay('¿Cuánto cuesta?');
 
         expect(gfLast())->toContain('$9.900');
+    });
+});
+
+function gfPointer(): string
+{
+    return 'Escribe «planes» para ver los precios o «pagar» para suscribirte.';
+}
+
+/** @return array<string, mixed>|null the contextual close the state keeps */
+function gfClosing(): ?array
+{
+    return ConversationFunnelState::where('product_id', test()->product->id)->first()?->context['closing'] ?? null;
+}
+
+function gfConversation(): Conversation
+{
+    return Conversation::firstOrCreate(['store_id' => test()->store->id, 'customer_phone' => GF_PHONE]);
+}
+
+describe('the contextual close after the free replies', function () {
+    beforeEach(function () {
+        gfPublish(free: 1);
+        // The only free reply, with the plans after it.
+        gfSay('Uno');
+
+        $this->close = 'Entiendo que quieres sentirte seguro al iniciar conversaciones. Esa habilidad se trabaja en el servicio completo, adaptado a tu situación. Si quieres seguir, puedes activar tu suscripción.';
+        $this->otherClose = 'Te entiendo, quieres ganar confianza. El servicio completo trabaja justo eso contigo. Si te interesa, revisa los planes.';
+        $this->fallback = 'Entiendo, eso es justo lo que el servicio te ayuda a trabajar.';
+    });
+
+    it('asks for the close in place of the strict reply once the free replies are over', function () {
+        expect(gfLastTurnPrompt())->toContain('explica en una frase que eso se trabaja con el servicio completo')->not->toContain('El cliente ya usó sus respuestas gratuitas');
+
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        gfSay('¿Cómo inicio una conversación?');
+
+        expect(gfLastTurnPrompt())->toContain('El cliente ya usó sus respuestas gratuitas')->toContain('y 400 caracteres')
+            ->not->toContain('explica en una frase que eso se trabaja con el servicio completo')->not->toContain(':characters')->not->toContain(':content_reply');
+    });
+
+    it('sends one contextual close per interval, though every message starts another episode', function () {
+        Log::spy();
+        $this->turns = [gfJson($this->close, question: 'contenido', fallback: $this->fallback)];
+        gfSay('¿Cómo inicio una conversación?');
+
+        // The plans went with the last free reply: the close goes alone.
+        expect(gfLast())->toBe($this->close)->and(gfClosing()['status'])->toBe(FunnelStates::CLOSING_SENT);
+
+        gfConversation()->update(['last_session_at' => now()]);
+        $this->turns = [gfJson($this->otherClose, fallback: $this->fallback)];
+        gfSay('¿Y si me pongo nervioso?');
+
+        expect(gfLast())->toBe($this->fallback."\n\n".gfPointer());
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing'] === 'model' && $context['closing_discarded'] === null));
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing'] === 'fallback' && $context['closing_discarded'] === 'interval'
+            && ! in_array($this->otherClose, $context, true) && ! in_array(GF_PHONE, $context, true)));
+    });
+
+    it('takes one reservation for two messages at once, and keeps it for the message that took it', function () {
+        $states = app(FunnelStates::class);
+        $claim = fn (string $wamid) => $states->claimClosing(gfConversation(), $this->product, $this->product->activeFunnel(), GuidedFunnel::STAGE, $wamid, 24);
+
+        expect($claim('wamid.a'))->toBe(FunnelStates::CLOSING_CLAIMED)
+            ->and($claim('wamid.b'))->toBeNull()
+            ->and($claim('wamid.a'))->toBe(FunnelStates::CLOSING_CLAIMED)
+            ->and(gfClosing()['wamid'])->toBe('wamid.a');
+    });
+
+    it('sends the same close once when its message is retried, with no second reservation nor model call', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.cierre', 'text', null))->toThrow(RuntimeException::class)
+            ->and(gfClosing())->toMatchArray(['wamid' => 'wamid.cierre', 'status' => 'released']);
+
+        $this->whatsAppDown = false;
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.cierre', 'text', null);
+
+        expect($this->turnPrompts)->toHaveCount(2)
+            ->and(gfLast())->toBe($this->close)
+            ->and(WhatsAppMessage::where('role', 'assistant')->where('content', $this->close)->count())->toBe(1)
+            ->and(gfClosing())->toMatchArray(['wamid' => 'wamid.cierre', 'status' => FunnelStates::CLOSING_SENT]);
+    });
+
+    it('gives the close back after a failed send: held for its retry, then free for any message', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        $this->whatsAppDown = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.fallido', 'text', null))->toThrow(RuntimeException::class);
+
+        // Another message within the retry window: no close, as the first may have gone out after all.
+        $this->whatsAppDown = false;
+        $this->turns = [gfJson($this->otherClose, fallback: $this->fallback)];
+        gfSay('¿Y si me pongo nervioso?');
+
+        expect(gfLast())->toBe($this->fallback."\n\n".gfPointer());
+
+        // Once the window is over, the close is free again.
+        $this->travel(11)->minutes();
+        $this->turns = [gfJson($this->otherClose, question: 'contenido')];
+        gfSay('¿Cómo sigo?');
+
+        expect(gfLast())->toBe($this->otherClose)->and(gfClosing()['status'])->toBe(FunnelStates::CLOSING_SENT);
+    });
+
+    it('holds the interval from the moment WhatsApp took the close', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        $sentAt = now();
+
+        gfSay('¿Cómo inicio una conversación?');
+
+        expect(gfClosing())->toMatchArray(['status' => FunnelStates::CLOSING_SENT, 'until' => $sentAt->copy()->addHours(24)->toIso8601String()]);
+    });
+
+    it('never sends a second close when the Core cannot tell whether the first went out', function () {
+        Log::spy();
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        $this->whatsAppAmbiguous = true;
+
+        expect(fn () => ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.ambiguo', 'text', null))->toThrow(RuntimeException::class);
+
+        // Meanwhile another message: no close of its own.
+        $this->whatsAppAmbiguous = false;
+        $this->turns = [gfJson($this->otherClose, fallback: $this->fallback)];
+        gfSay('¿Y si me pongo nervioso?');
+
+        expect(gfLast())->not->toContain($this->otherClose);
+
+        // The retry: the same close, from the answer already generated.
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.ambiguo', 'text', null);
+
+        expect(gfLast())->toBe($this->close)->and($this->turnPrompts)->toHaveCount(3);
+
+        // Once WhatsApp took it, another delivery of the same message sends nothing again.
+        $sent = count(sentWhatsAppTexts());
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, '¿Cómo inicio una conversación?', 'wamid.ambiguo', 'text', null);
+
+        expect(sentWhatsAppTexts())->toHaveCount($sent)
+            ->and(WhatsAppMessage::where('role', 'assistant')->where('content', $this->close)->count())->toBe(1);
+        Log::shouldHaveReceived('info')->with('FUNNEL_CLOSING_ALREADY_SENT', Mockery::any());
+    });
+
+    it('allows another close once the interval is over', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        gfSay('¿Cómo inicio una conversación?');
+
+        $this->travel(25)->hours();
+        $this->turns = [gfJson($this->otherClose, question: 'contenido')];
+        gfSay('¿Y si me pongo nervioso?');
+
+        expect(gfLast())->toBe($this->otherClose."\n\n".gfPointer());
+    });
+
+    it('keeps the interval through a reset of the state, and forgets the state once it is over', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido')];
+        gfSay('¿Cómo inicio una conversación?');
+
+        expect(app(FunnelStates::class)->reset(gfConversation(), $this->product))->toBeTrue()
+            ->and(ConversationFunnelState::sole()->context)->toHaveKey('closing')->not->toHaveKey('limit_reads')
+            ->and(ConversationFunnelState::sole()->stage_interactions)->toBe(0);
+
+        $this->turns = [gfJson($this->otherClose, fallback: $this->fallback)];
+        gfSay('¿Y si me pongo nervioso?');
+
+        expect(gfLast())->toBe($this->fallback."\n\n".gfPointer());
+
+        $this->travel(25)->hours();
+
+        expect(app(FunnelStates::class)->reset(gfConversation(), $this->product))->toBeTrue()
+            ->and(ConversationFunnelState::count())->toBe(0);
+    });
+
+    it('sends no persuasive close after a refusal the model read, for an interval', function () {
+        Log::spy();
+        $this->turns = [gfJson('Entiendo, aquí estaré si quieres retomarlo.', question: 'rechazo')];
+        gfSay('Ya me cansé de esto');
+
+        $this->turns = [gfJson($this->close, question: 'contenido', fallback: $this->fallback)];
+        gfSay('¿Cómo inicio una conversación?');
+
+        expect(gfLast())->toBe($this->fallback."\n\n".gfPointer())->and(gfClosing())->toBeNull();
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing_discarded'] === 'declined'));
+    });
+
+    it('sends no persuasive close to a refusal the model read as content', function () {
+        $this->turns = [gfJson($this->close, question: 'contenido', fallback: $this->fallback)];
+        gfSay('No me interesa');
+
+        expect(gfLast())->not->toContain($this->close)
+            ->and(gfLastTurnPrompt())->not->toContain('El cliente ya usó sus respuestas gratuitas')
+            ->and(gfClosing())->toBeNull();
+    });
+
+    it('reminds of the payment open, with no new invitation to buy', function () {
+        Log::spy();
+        gfSay('Quiero el semanal');
+        $this->turns = [gfJson($this->close, question: 'contenido', fallback: $this->fallback)];
+
+        gfSay('¿Cómo inicio una conversación?');
+
+        expect(gfLast())->toStartWith($this->fallback."\n\n")->toContain('sigue pendiente')->not->toContain($this->close)->not->toContain('$9.900')
+            ->and(gfLastTurnPrompt())->not->toContain('El cliente ya usó sus respuestas gratuitas')
+            ->and(Payment::count())->toBe(1)
+            ->and(gfClosing())->toBeNull();
+        Log::shouldHaveReceived('info')->with('FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing_discarded'] === 'payment'));
+    });
+
+    it('closes a message the model did not classify only when the close passes', function (string $reply, bool $closes) {
+        $this->turns = [gfJson($reply, fallback: $this->fallback)];
+
+        gfSay('Mmm, ella');
+
+        expect(gfLast())->toBe($closes ? $reply : $this->fallback."\n\n".gfPointer());
+    })->with([
+        'un cierre válido' => ['Te entiendo, quieres ganar confianza. El servicio completo trabaja justo eso contigo. Si te interesa, revisa los planes.', true],
+        'una petición de más datos' => ['Cuéntame un poco más de tu situación.', false],
+        'un consejo' => ['Una pregunta abierta suele romper el hielo. Con la suscripción verás más ideas.', false],
+    ]);
+
+    it('rejects content, pressure and farewells in a close', function (string $text, string $reason) {
+        expect(app(CommercialClaims::class)->closingReplyViolation($text, 'Asesor'))->toBe($reason);
+    })->with([
+        'un consejo sin verbo de instrucción' => ['Para iniciar una conversación, lo ideal es comentar algo del lugar. Con la suscripción profundizas en esto.', 'unanchored'],
+        'otro consejo' => ['Una buena forma de romper el hielo es una pregunta abierta. Con la suscripción verás más ideas.', 'unanchored'],
+        'una instrucción' => ['Haz contacto visual antes de hablar. Activa tu suscripción para más.', 'instruction'],
+        'una receta' => ['Mezcla avena con yogur la noche anterior. Con la suscripción tendrás más recetas.', 'unanchored'],
+        'un ejemplo' => ['Puedes decir algo como hola, ¿qué lees? Conoce los planes del servicio.', 'instruction'],
+        'un paso de otro sector' => ['Lo primero es identificar los riesgos de cada puesto. Con el acceso completo te guiamos.', 'instruction'],
+        'un paso sin verbo de instrucción' => ['Identificar los riesgos de cada puesto ordena todo. Con el acceso completo te guiamos.', 'unanchored'],
+        'presión' => ['Entiendo. Solo hoy puedes activar tu suscripción al servicio.', 'pressure'],
+        'una despedida' => ['Entiendo. Si algún día quieres, activa tu suscripción al servicio. ¡Hasta pronto!', 'farewell'],
+        'sin invitación' => ['Entiendo que quieres sentirte seguro. El servicio trabaja eso contigo.', 'no_invitation'],
+        'más respuestas gratis' => ['Entiendo. Activa tu suscripción y tendrás otra respuesta gratis del servicio.', 'free'],
+        'un precio' => ['Entiendo. El servicio cuesta $9.900, activa tu suscripción.', 'currency'],
+    ]);
+
+    it('takes no bare tip as the fallback of a close', function (string $text, ?string $reason) {
+        expect(app(CommercialClaims::class)->closingFallbackViolation($text, 'Asesor'))->toBe($reason);
+    })->with([
+        'un consejo' => ['Una pregunta abierta suele romper el hielo con naturalidad.', 'unanchored'],
+        'otro consejo' => ['Lo ideal es empezar con un comentario sobre el lugar.', 'unanchored'],
+        'una despedida' => ['Entiendo, el servicio te acompaña. ¡Hasta pronto!', 'farewell'],
+        'sobre el servicio' => ['Entiendo, eso es justo lo que el servicio te ayuda a trabajar.', null],
+    ]);
+
+    it('closes for a product of any sector by its own name, with no word of the sector in the Core', function (string $name, string $close) {
+        $this->product->update(['name' => $name]);
+        $this->turns = [gfJson($close, question: 'contenido')];
+
+        gfSay('¿Por dónde empiezo?');
+
+        expect(gfLast())->toBe($close);
+    })->with([
+        ['Recetario Fácil', 'Entiendo que quieres organizar tus comidas. Recetario Fácil está pensado justo para eso. Si te interesa, revisa los planes.'],
+        ['Gestión SST Pyme', 'Te entiendo, necesitas ordenar la seguridad de tu empresa. Gestión SST Pyme te acompaña en eso. Puedes activar tu suscripción cuando quieras.'],
+        ['Curso de inglés', 'Entiendo que quieres hablar con más soltura. El Curso de inglés trabaja justo eso. Conoce los planes cuando quieras.'],
+    ]);
+
+    it('keeps everything as before when it is turned off', function () {
+        config(['botinker.sales_funnels.guided.closing_reply.enabled' => false]);
+        Log::spy();
+        $strict = 'Entiendo. Eso se trabaja con el servicio completo. Si quieres, conoce los planes.';
+
+        foreach (['¿Cómo inicio una conversación?', '¿Y si me pongo nervioso?'] as $message) {
+            $this->turns = [gfJson($strict, fallback: $this->fallback)];
+            gfSay($message);
+
+            expect(gfLast())->toBe($strict)
+                ->and(gfLastTurnPrompt())->toContain('explica en una frase que eso se trabaja con el servicio completo')->not->toContain('El cliente ya usó sus respuestas gratuitas');
+        }
+
+        $this->turns = [gfJson('Entiendo, aquí estaré.', question: 'rechazo')];
+        gfSay('Ya me cansé de esto');
+
+        expect(ConversationFunnelState::sole()->context)->not->toHaveKey('closing')->not->toHaveKey('declined_until');
+        Log::shouldNotHaveReceived('info', ['FUNNEL_LIMIT_READ', Mockery::on(fn (array $context) => $context['closing'] !== null)]);
     });
 });

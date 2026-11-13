@@ -6,6 +6,7 @@ use App\Models\Conversation;
 use App\Models\ConversationFunnelState;
 use App\Models\Product;
 use App\Models\SalesFunnel;
+use Carbon\Carbon;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +30,18 @@ class FunnelStates
     public const GRACE = 'grace';
 
     public const REACTIVATION = 'reactivation';
+
+    /** What claimClosing() says of a message's contextual close. */
+    public const CLOSING_CLAIMED = 'claimed';
+
+    public const CLOSING_SENT = 'sent';
+
+    public const CLOSING_DECLINED = 'declined';
+
+    /** A close given back after a failed send (releaseClosing()). */
+    private const CLOSING_RELEASED = 'released';
+
+    private const CLOSING_PENDING = 'pending';
 
     private const MAX_RETRIES = 3;
 
@@ -169,6 +182,143 @@ class FunnelStates
     }
 
     /**
+     * Takes the conversation's contextual close for this message, under the
+     * row's lock: however many messages arrive at once, one per
+     * $intervalHours, and none while a refusal lasts (markDeclined()).
+     *
+     * - Pending until confirmClosing(): a close whose send never said how it
+     *   went holds the interval, as it may have gone out.
+     * - Given back by releaseClosing() after a failed send: this same message
+     *   takes it again right away; any other only once its hold is over (the
+     *   retry window), since WhatsApp may have taken it after all.
+     * - A retry of a message whose close went out gets CLOSING_SENT: it was
+     *   delivered, nothing is taken nor sent again.
+     *
+     * Each mark keeps its own end (until), so nothing else needs the interval.
+     *
+     * @return string|null CLOSING_CLAIMED, CLOSING_SENT, CLOSING_DECLINED, or null when another close holds the interval
+     */
+    public function claimClosing(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, ?string $wamid, int $intervalHours): ?string
+    {
+        return $this->withLockedState($conversation, $product, $funnel, $stage, function (ConversationFunnelState $state) use ($wamid, $intervalHours) {
+            $context = $state->context ?? [];
+            $closing = $context['closing'] ?? null;
+            $own = $wamid !== null && ($closing['wamid'] ?? null) === $wamid;
+
+            if ($own && ($closing['status'] ?? null) === self::CLOSING_SENT) {
+                return self::CLOSING_SENT;
+            }
+
+            if ($this->lasts($context['declined_until'] ?? null)) {
+                return self::CLOSING_DECLINED;
+            }
+
+            if (! $own && $this->lasts($closing['until'] ?? null)) {
+                return null;
+            }
+
+            $context['closing'] = ['wamid' => $wamid, 'status' => self::CLOSING_PENDING, 'until' => now()->addHours($intervalHours)->toIso8601String()];
+            $state->update(['context' => $context]);
+
+            return self::CLOSING_CLAIMED;
+        });
+    }
+
+    /** Whether WhatsApp already took this message's close (confirmClosing()). */
+    public function closingSent(Conversation $conversation, Product $product, ?string $wamid): bool
+    {
+        $closing = $this->find($conversation, $product)?->context['closing'] ?? null;
+
+        return $wamid !== null && ($closing['wamid'] ?? null) === $wamid && ($closing['status'] ?? null) === self::CLOSING_SENT;
+    }
+
+    /** WhatsApp took this message's close: the interval runs from now. */
+    public function confirmClosing(Conversation $conversation, Product $product, ?string $wamid, int $intervalHours): void
+    {
+        $this->updateClosing($conversation, $product, $wamid, fn () => ['status' => self::CLOSING_SENT, 'until' => now()->addHours($intervalHours)->toIso8601String()]);
+    }
+
+    /** This message's close was not sent: see claimClosing(). */
+    public function releaseClosing(Conversation $conversation, Product $product, ?string $wamid, int $holdMinutes): void
+    {
+        $this->updateClosing($conversation, $product, $wamid, fn (array $closing) => ($closing['status'] ?? null) === self::CLOSING_PENDING
+            ? ['status' => self::CLOSING_RELEASED, 'until' => now()->addMinutes($holdMinutes)->toIso8601String()]
+            : null);
+    }
+
+    /** A refusal: no contextual close for $intervalHours (claimClosing()). */
+    public function markDeclined(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, int $intervalHours): void
+    {
+        $this->withLockedState($conversation, $product, $funnel, $stage, function (ConversationFunnelState $state) use ($intervalHours) {
+            $state->update(['context' => ['declined_until' => now()->addHours($intervalHours)->toIso8601String()] + ($state->context ?? [])]);
+        });
+    }
+
+    /**
+     * @param  callable(array<string, mixed>): ?array<string, mixed>  $change  the fields to change of this message's close, or null for none
+     */
+    private function updateClosing(Conversation $conversation, Product $product, ?string $wamid, callable $change): void
+    {
+        $this->withRetries($conversation, $product, function () use ($conversation, $product, $wamid, $change) {
+            DB::transaction(function () use ($conversation, $product, $wamid, $change) {
+                $state = ConversationFunnelState::where('conversation_id', $conversation->id)->where('product_id', $product->id)->lockForUpdate()->first();
+                $context = $state?->context ?? [];
+                $closing = $context['closing'] ?? null;
+
+                if ($closing === null || ($closing['wamid'] ?? null) !== $wamid || ($fields = $change($closing)) === null) {
+                    return;
+                }
+
+                $context['closing'] = $fields + $closing;
+                $state->update(['context' => $context]);
+            });
+        });
+    }
+
+    /**
+     * @template T
+     *
+     * @param  callable(ConversationFunnelState): T  $operation
+     * @return T|null null when the state vanished in between
+     */
+    private function withLockedState(Conversation $conversation, Product $product, SalesFunnel $funnel, string $stage, callable $operation): mixed
+    {
+        return $this->withRetries($conversation, $product, function () use ($conversation, $product, $funnel, $stage, $operation) {
+            $id = ConversationFunnelState::firstOrCreate(
+                ['conversation_id' => $conversation->id, 'product_id' => $product->id],
+                ['sales_funnel_id' => $funnel->id, 'stage' => $stage, 'stage_interactions' => 0],
+            )->id;
+
+            return DB::transaction(function () use ($id, $operation) {
+                $state = ConversationFunnelState::whereKey($id)->lockForUpdate()->first();
+
+                return $state !== null ? $operation($state) : null;
+            });
+        });
+    }
+
+    /** A mark's end (an ISO 8601 date) is still ahead. */
+    private function lasts(mixed $until): bool
+    {
+        return is_string($until) && Carbon::parse($until)->isFuture();
+    }
+
+    /**
+     * The marks of reset() keeps: a contextual close or a refusal still
+     * lasting. Everything else of the state goes.
+     *
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function lastingMarks(array $context): array
+    {
+        return array_filter([
+            'closing' => $this->lasts($context['closing']['until'] ?? null) ? $context['closing'] : null,
+            'declined_until' => $this->lasts($context['declined_until'] ?? null) ? $context['declined_until'] : null,
+        ]);
+    }
+
+    /**
      * @template T
      *
      * @param  callable(): T  $operation
@@ -244,9 +394,33 @@ class FunnelStates
      * Collides with a save like a save with it: see save(). True means the
      * state ended up reset, not that this call removed a row: another process
      * may have removed it just before. False: there was no state to forget.
+     *
+     * A contextual close or a refusal still lasting is not forgotten
+     * (lastingMarks()): the state then stays, back at its version's start
+     * with only those marks, until they are over.
      */
     public function reset(Conversation $conversation, Product $product): bool
     {
-        return $this->withRetries($conversation, $product, fn () => $this->find($conversation, $product)?->delete() ?? false);
+        return $this->withRetries($conversation, $product, function () use ($conversation, $product) {
+            $state = $this->find($conversation, $product);
+            $marks = $state !== null ? $this->lastingMarks($state->context ?? []) : [];
+
+            if ($state === null || $marks === []) {
+                return $state?->delete() ?? false;
+            }
+
+            return DB::transaction(function () use ($state) {
+                $locked = ConversationFunnelState::whereKey($state->id)->lockForUpdate()->first();
+                $marks = $locked !== null ? $this->lastingMarks($locked->context ?? []) : [];
+
+                if ($locked === null || $marks === []) {
+                    return $locked?->delete() ?? true;
+                }
+
+                $locked->update(['stage' => $locked->salesFunnel->funnelDefinition()->startStage, 'stage_interactions' => 0, 'context' => $marks, 'stage_entered_at' => now()]);
+
+                return true;
+            });
+        });
     }
 }

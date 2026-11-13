@@ -117,9 +117,7 @@ return [
             // Every message of a guided funnel is first a commercial turn: only the Core gives a free reply, to a request for content.
             'commercial_turn' => 'Este es un turno comercial: sigue el PROCESO COMERCIAL con tu tono habitual y usa la conversación anterior para no repetir lo que ya dijiste ni lo que el cliente ya contó. '
                 .'En este mensaje no resuelvas peticiones del contenido del servicio (consejos, técnicas, ejemplos, ejercicios o ayuda con su situación concreta): el sistema decide si puede dárselas. '
-                .'Si el cliente pide eso, en "reply", en máximo tres frases cortas y :characters caracteres: empieza con un reconocimiento muy breve (por ejemplo, «Entiendo» o «Te entiendo»), '
-                .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción; '
-                .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas. '
+                .':content_reply '
                 .'No inventes importes, beneficios ni condiciones. '
                 .'Si su último mensaje es solo un saludo, un agradecimiento o una cortesía, respóndelo con naturalidad y en pocas palabras, sin ofrecer los planes ni pedirle que escriba algo. '
                 .'Si expresa rechazo, frustración, enojo o falta de interés, responde con calma y respeto en una o dos frases, sin insistir, sin ofrecer los planes y sin mencionar pagos. '
@@ -128,6 +126,27 @@ return [
                 .'"contenido" si pide el tema del servicio en sí (consejos, técnicas, ejemplos o ayuda con su situación), también cuando solo describe en pocas palabras una situación o dificultad personal; "cortesia" si es solo un saludo, un agradecimiento, una despedida o una cortesía; "rechazo" si expresa rechazo, frustración, enojo o falta de interés; null solo si no se puede saber. '
                 .'Entiende el mensaje aunque tenga errores de ortografía, abreviaciones, expresiones coloquiales o esté incompleto («no se como funsiona» es «no sé cómo funciona»): clasifícalo por lo que quiso decir, sin corregirlo, sin comentar sus errores y sin inventar detalles que no dijo. '
                 .'Si de verdad no se entiende, usa null y en "reply" pídele en una frase, con naturalidad, que te cuente un poco más.',
+            // How the commercial turn answers a request for content (the :content_reply of commercial_turn).
+            'content_reply' => 'Si el cliente pide eso, en "reply", en máximo tres frases cortas y :characters caracteres: empieza con un reconocimiento muy breve (por ejemplo, «Entiendo» o «Te entiendo»), '
+                .'explica en una frase que eso se trabaja con el servicio completo y cierra invitándolo sin presión a conocer los planes o activar su suscripción; '
+                .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas.',
+            // Once the customer has no free reply left, nor a payment open, its instruction takes content_reply's place:
+            // the model's contextual close, checked before it goes out (CommercialClaims::closingReplyViolation()),
+            // at most one per conversation and product every interval_hours (FunnelStates::claimClosing()).
+            // Generic, for every domain.
+            'closing_reply' => [
+                'enabled' => true,
+                'instruction' => 'El cliente ya usó sus respuestas gratuitas. Si pide eso o cuenta una necesidad, en "reply", en máximo tres frases y :characters caracteres: '
+                    .'empieza reconociendo en pocas palabras esa necesidad concreta (por ejemplo, «Entiendo que…»), relaciónala con un beneficio real del servicio tomado solo de la información del producto '
+                    .'y presenta la suscripción como la forma de continuar, invitándolo sin presión a ver los planes; en cada frase después de la primera nombra el servicio, el producto, la suscripción o los planes. '
+                    .'No te despidas, no inventes urgencia, no prometas más respuestas gratuitas y no menciones precios; '
+                    .'no des técnicas, pasos, ejemplos, ejercicios ni instrucciones prácticas, ni siquiera una pista, y no uses listas ni frases entre comillas.',
+                'interval_hours' => 24,
+                // The only sentence that need not name the service: the opening acknowledgment, this long at most.
+                'max_acknowledgment_characters' => 120,
+                'pressure_terms' => ['solo hoy', 'ultima oportunidad', 'ultimas horas', 'tiempo limitado', 'por poco tiempo', 'no te lo pierdas', 'quedan pocos', 'ultimos cupos', 'antes de que se acabe', 'date prisa', 'apurate'],
+                'farewell_terms' => ['hasta pronto', 'hasta luego', 'adios', 'nos vemos', 'gracias por conversar', 'fue un gusto', 'que tengas buen dia', 'que estes bien', 'cuidate'],
+            ],
             // What a greeting or a thanks gets when no reply of the model may go out. Generic, for every domain.
             'courtesy_reply' => 'Con gusto. Aquí estoy si quieres saber algo más del servicio.',
             // A second, safer answer the commercial turn writes in the same call, used only when its reply cannot go

@@ -247,6 +247,85 @@ final class CommercialClaims
     }
 
     /**
+     * Why a commercial turn's contextual close, once the free replies are over
+     * (config sales_funnels.guided.closing_reply), cannot go out, or null.
+     * Nothing commercialWordingViolation() forbids, as short as a reply after
+     * the free replies, no pressure nor farewell, every sentence anchored to
+     * the service (closingAnchorViolation()) and an invitation to the plans.
+     * Like the rest of this class, it reduces what a model could give away; a
+     * hint worded inside a sentence that names the service still passes.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function closingReplyViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        if ($reason = $this->commercialWordingViolation($text, $productName, $aliases)) {
+            return $reason;
+        }
+
+        $rules = (array) config('botinker.sales_funnels.guided.after_limit_rules', []);
+        $plain = Str::ascii(mb_strtolower($text));
+        $sentences = array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $plain)), fn (string $sentence) => $sentence !== '');
+
+        return match (true) {
+            mb_strlen($text) > (int) ($rules['max_characters'] ?? 400) => 'too_long',
+            count($sentences) > (int) ($rules['max_sentences'] ?? 4) => 'too_many_sentences',
+            default => $this->closingAnchorViolation($text, $productName, $aliases)
+                ?? (! $this->mentions($plain, (array) ($rules['commercial_terms'] ?? [])) ? 'no_invitation' : null),
+        };
+    }
+
+    /**
+     * Why a fallback reply cannot go out once the free replies are over, or
+     * null: fallbackReplyViolation(), and anchored like a contextual close
+     * (closingAnchorViolation()), so a bare tip never stands for one.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    public function closingFallbackViolation(string $text, string $productName = '', array $aliases = []): ?string
+    {
+        return $this->fallbackReplyViolation($text, $productName, $aliases) ?? $this->closingAnchorViolation($text, $productName, $aliases);
+    }
+
+    /**
+     * No pressure nor farewell (closing_reply.pressure_terms, farewell_terms),
+     * and every sentence is about the service: it names the service, the
+     * product's whole name or an alias, or the plans; only the first may be,
+     * instead, a short acknowledgment (after_limit_rules.acknowledgments,
+     * closing_reply.max_acknowledgment_characters). Content of any domain
+     * fails without listing it: it is not about the service.
+     *
+     * @param  list<string>  $aliases  other whole names of the product
+     */
+    private function closingAnchorViolation(string $text, string $productName, array $aliases): ?string
+    {
+        $rules = (array) config('botinker.sales_funnels.guided.after_limit_rules', []);
+        $closing = (array) config('botinker.sales_funnels.guided.closing_reply', []);
+        $plain = preg_replace($this->namePatterns([$productName, ...$aliases]), self::PRODUCT_REFERENCE, Str::ascii(mb_strtolower($text)));
+        $anchors = [...(array) ($rules['commercial_terms'] ?? []), ...(array) ($rules['service_terms'] ?? []), self::PRODUCT_REFERENCE];
+        $sentences = array_values(array_filter(array_map('trim', preg_split('/[.!?;:]+|\n+/u', $plain)), fn (string $sentence) => $sentence !== ''));
+
+        if ($this->mentions($plain, (array) ($closing['pressure_terms'] ?? []))) {
+            return 'pressure';
+        }
+
+        if ($this->mentions($plain, (array) ($closing['farewell_terms'] ?? []))) {
+            return 'farewell';
+        }
+
+        foreach ($sentences as $index => $sentence) {
+            $acknowledgment = $index === 0 && $this->startsWithAny($sentence, (array) ($rules['acknowledgments'] ?? []))
+                && mb_strlen($sentence) <= (int) ($closing['max_acknowledgment_characters'] ?? 120);
+
+            if (! $acknowledgment && ! $this->mentions($sentence, $anchors)) {
+                return 'unanchored';
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The whole names, longest first so an alias containing the name wins,
      * as patterns over lowercase text without accents.
      *
