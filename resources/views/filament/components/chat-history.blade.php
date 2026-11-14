@@ -7,7 +7,7 @@
                     <div class="flex justify-start">
                         <div class="bg-white text-gray-900 rounded-lg rounded-tl-none px-4 py-2 max-w-xs shadow-sm">
                             <p class="text-sm break-words whitespace-pre-wrap">{{ $message->content }}</p>
-                            <span class="text-xs text-gray-500 mt-1 block">{{ $message->created_at->format('H:i') }}</span>
+                            <span class="text-xs text-gray-500 mt-1 block">{{ $message->displayedAt() }}</span>
                         </div>
                     </div>
                 @else
@@ -15,7 +15,7 @@
                     <div class="flex justify-end">
                         <div class="bg-green-500 text-white rounded-lg rounded-tr-none px-4 py-2 max-w-xs shadow-sm">
                             <p class="text-sm break-words whitespace-pre-wrap">{{ $message->content }}</p>
-                            <span class="text-xs text-green-100 mt-1 block text-right">{{ $message->created_at->format('H:i') }}</span>
+                            <span class="text-xs text-green-100 mt-1 block text-right">{{ $message->displayedAt() }}</span>
                         </div>
                     </div>
                 @endif

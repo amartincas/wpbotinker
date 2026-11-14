@@ -132,7 +132,7 @@
                                 <div style="display: flex; align-items: flex-end; gap: 0.3rem; max-width: 75%;">
                                     <div style="padding: 0.6rem 1rem; border-radius: 12px; background: {{ $message->role === 'user' ? 'white' : '#dcf8c6' }}; box-shadow: 0 1px 1px rgba(0,0,0,0.1);">
                                         <p style="font-size: 14px; margin: 0; word-wrap: break-word; white-space: pre-wrap; color: #111827;">{{ $message->content }}</p>
-                                        <div style="font-size: 10px; color: #6b7280; text-align: right; margin-top: 4px;">{{ $message->created_at->format('H:i') }}</div>
+                                        <div style="font-size: 10px; color: #6b7280; text-align: right; margin-top: 4px;">{{ $message->displayedAt() }}</div>
                                     </div>
                                     @if($message->role === 'assistant')
                                         <div style="font-size: 12px; margin-bottom: 2px; min-width: 20px; text-align: center;">

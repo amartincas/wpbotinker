@@ -50,6 +50,16 @@ class WhatsAppMessage extends Model
         });
     }
 
+    /** When it was sent, as the panel shows it: "14/11/2026 10:10 p. m." in config botinker.display_timezone. */
+    public function displayedAt(): string
+    {
+        return $this->created_at
+            ->copy()
+            ->setTimezone((string) config('botinker.display_timezone', 'America/Bogota'))
+            ->locale('es')
+            ->isoFormat('DD/MM/YYYY hh:mm a');
+    }
+
     /**
      * Get the store that owns this message.
      */
