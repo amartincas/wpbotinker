@@ -49,13 +49,15 @@ class SalesFunnelRunner
 
     /**
      * @param  string  $query  what the customer asked: differs from $message when it only picked an option
+     * @param  bool  $fromAd  the product was resolved from the ad the customer came from (OpeningMessage::for())
      */
-    public function begin(Conversation $conversation, Product $product, SalesFunnel $funnel, AccessDecision $access, string $message, string $query): FunnelStep
+    public function begin(Conversation $conversation, Product $product, SalesFunnel $funnel, AccessDecision $access, string $message, string $query, bool $fromAd = false): FunnelStep
     {
         $definition = $funnel->funnelDefinition();
         $state = $this->states->find($conversation, $product);
 
-        if ($state === null && ($opening = $this->openings->for($product, $query)) !== null) {
+        // Only a funnel not started yet opens: a later message, or another ad, never starts it again.
+        if ($state === null && ($opening = $this->openings->for($product, $query, $fromAd)) !== null) {
             return FunnelStep::literal($definition, $opening, $definition->startStage, $definition->openingConsumesFreeReply && $definition->freeRepliesLimit > 0, isOpening: true);
         }
 

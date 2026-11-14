@@ -200,13 +200,15 @@ class ConversationPipeline
         }
 
         $domain = $product ? $this->domains->get($product->domain_key, $store->id) : null;
+        // The ad the customer came from named this product (ProductResolver): its opening needs no pre-filled text.
+        $fromAd = $adProductId !== null && $product?->id === $adProductId;
 
         $conversation->update(['current_product_id' => $product?->id, 'pending_state' => null]);
 
         // A customer without access to a product with an active funnel goes
         // through the funnel; without a funnel, nothing below changes.
         if ($product && $domain && $product->activeFunnel() !== null && $this->funnels->appliesTo($product, $access = $this->access->decide($customer, $product))) {
-            $this->runFunnel($store, $conversation, $from, $messageBody, $clarifiedQuery ?? $messageBody, $customer, $product, $domain, $access, $wamid);
+            $this->runFunnel($store, $conversation, $from, $messageBody, $clarifiedQuery ?? $messageBody, $customer, $product, $domain, $access, $wamid, $fromAd);
 
             return;
         }
@@ -252,9 +254,10 @@ class ConversationPipeline
         }
 
         // The product's configured opening, exactly as written, is the first
-        // free reply when the message is one of its triggers; it replaces
-        // the store's generic welcome.
-        $opening = $freeTurn?->number === 1 ? $this->openings->for($product, $messageBody) : null;
+        // free reply when the customer came from its ad, or the message is
+        // one of its triggers or the start of only that trigger
+        // (OpeningMessage::for()); it replaces the store's generic welcome.
+        $opening = $freeTurn?->number === 1 ? $this->openings->for($product, $messageBody, $fromAd) : null;
 
         if ($opening !== null) {
             $this->welcome = null;
@@ -318,7 +321,7 @@ class ConversationPipeline
      * moved, so the queue's retry finds everything as it was. Once sent,
      * nothing fails the job, or the retry would send it again.
      */
-    private function runFunnel(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, AccessDecision $access, ?string $wamid): void
+    private function runFunnel(Store $store, Conversation $conversation, string $from, string $messageBody, string $query, $customer, Product $product, DomainModule $domain, AccessDecision $access, ?string $wamid, bool $fromAd = false): void
     {
         $funnel = $product->activeFunnel();
         // A prospect of a guided funnel with a payment open keeps conversing: the Core never starts a
@@ -333,7 +336,7 @@ class ConversationPipeline
             return;
         }
 
-        $step = $this->funnels->begin($conversation, $product, $funnel, $access, $messageBody, $query);
+        $step = $this->funnels->begin($conversation, $product, $funnel, $access, $messageBody, $query, $fromAd);
 
         Log::info('FUNNEL_STEP', ['store_id' => $store->id, 'product_id' => $product->id, 'version' => $funnel->version, 'kind' => $step->kind, 'stage' => $step->stage?->key, 'next' => $step->nextStage]);
 
