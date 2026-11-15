@@ -31,7 +31,6 @@ use App\Models\User;
 use App\Models\WhatsAppMessage;
 use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\CommercialClaims;
-use App\Platform\Commerce\OpeningMessage;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Conversation\PromptAssembler;
 use App\Platform\Funnel\FunnelDefinition;
@@ -1786,6 +1785,7 @@ describe('a static opening and the conversation after it', function () {
     ]);
 
     it('reads a request for information about the subscription as a question, not as a purchase', function () {
+        gfSay('Quiero conocer el asesor');
         $calls = count($this->turnPrompts);
         $this->turns = [gfJson('Con la suscripción conversas conmigo cuando lo necesites.', question: 'comercial')];
 
@@ -1854,6 +1854,7 @@ describe('a static opening and the conversation after it', function () {
     });
 
     it('answers a courtesy without the limit reply once the free replies are spent, and still limits content', function () {
+        gfSay('Quiero conocer el asesor');
         gfSay('¿Cómo le hablo a una chica en un bar?');
         expect(gfTurns())->toBe(1);
 
@@ -3365,14 +3366,13 @@ describe('product questions after the free replies: how it is taught, its format
     ]);
 });
 
-describe('the opening: a pre-filled message cut short, and the ad the customer came from', function () {
+describe('the opening: once the product is identified, by its ad or by the message', function () {
     beforeEach(function () {
         gfPublish(free: 1);
         $this->store->update(['welcome_message' => 'BIENVENIDA-TIENDA']);
         $this->product->update(['opening_message' => 'APERTURA-LITERAL', 'opening_triggers' => ['Hola! Quiero conocer el coach Asesor Personal']]);
         $this->other = Product::create(['store_id' => $this->store->id, 'domain_key' => 'tema', 'name' => 'Otro', 'description' => 'd', 'price' => 1, 'stock' => 1, 'access_mode' => Product::ACCESS_SUBSCRIPTION,
             'opening_message' => 'APERTURA-OTRO', 'opening_triggers' => ['Quiero saber del curso de cocina']]);
-        $this->openings = app(OpeningMessage::class);
         // A text message as the webhook passes it on, with the product its ad named (or none).
         $this->fromAd = function (string $body, ?int $productId) {
             ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, $body, 'wamid.in.'.Str::random(10), 'text', null, $productId);
@@ -3381,56 +3381,7 @@ describe('the opening: a pre-filled message cut short, and the ad the customer c
         $this->openingsSent = fn () => collect(sentWhatsAppTexts())->filter(fn (Request $request) => $request->data()['text']['body'] === 'APERTURA-LITERAL')->count();
     });
 
-    it('opens with the start of the only trigger it fits, without the store\'s welcome and spending no free reply', function () {
-        gfConversation()->update(['current_product_id' => $this->product->id]);
-
-        gfSay('Hola! Quiero conocer el co');
-
-        expect(gfLast())->toBe('APERTURA-LITERAL')->not->toContain('BIENVENIDA-TIENDA')
-            ->and($this->turnPrompts)->toBe([])->and(gfTurns())->toBe(0);
-    });
-
-    it('still opens with the whole trigger', function () {
-        gfConversation()->update(['current_product_id' => $this->product->id]);
-
-        gfSay('Hola! Quiero conocer el coach Asesor Personal');
-
-        expect(gfLast())->toBe('APERTURA-LITERAL')->and(gfTurns())->toBe(0);
-    });
-
-    it('takes the start of a trigger only when it is long enough, at its start, and of one trigger alone', function (string $message, ?string $opening) {
-        expect($this->openings->for($this->product->fresh(), $message))->toBe($opening);
-    })->with([
-        'el comienzo de un único disparador' => ['Hola! Quiero conocer el co', 'APERTURA-LITERAL'],
-        'con tildes y signos distintos' => ['¡hola!  QUIERO conocer el coach', 'APERTURA-LITERAL'],
-        'menos de tres palabras' => ['Hola! Quiero conocer', null],
-        'tres palabras y menos de 15 caracteres' => ['Quiero el co', null],
-        'sus palabras, sin su comienzo' => ['conocer el coach Asesor Personal', null],
-        'otro orden' => ['Hola! El coach quiero conocer', null],
-        'el texto sigue más allá del disparador' => ['Hola! Quiero conocer el coach Asesor Personal ya mismo', null],
-        'solo un saludo' => ['Hola', null],
-    ]);
-
-    it('opens nothing when two products of the store share that start', function () {
-        $this->other->update(['opening_triggers' => ['Hola! Quiero conocer el coach Otro']]);
-
-        expect($this->openings->for($this->product->fresh(), 'Hola! Quiero conocer el co'))->toBeNull()
-            ->and($this->openings->for($this->other->fresh(), 'Hola! Quiero conocer el co'))->toBeNull()
-            // What is not shared still tells them apart.
-            ->and($this->openings->for($this->product->fresh(), 'Hola! Quiero conocer el coach As'))->toBe('APERTURA-LITERAL');
-    });
-
-    it('never opens again once the funnel started', function () {
-        gfConversation()->update(['current_product_id' => $this->product->id]);
-        gfSay('Hola! Quiero conocer el co');
-        $this->turns = [gfJson('RESPUESTA-DEL-TURNO', question: 'comercial')];
-
-        gfSay('Hola! Quiero conocer el co');
-
-        expect(gfLast())->not->toBe('APERTURA-LITERAL')->and(($this->openingsSent)())->toBe(1);
-    });
-
-    it('opens from the ad whatever its pre-filled text became: whole, cut short or changed', function (string $body) {
+    it('presents the product of the ad whatever its message says, without the store\'s welcome and spending no free reply', function (string $body) {
         ($this->fromAd)($body, $this->product->id);
 
         expect(gfLast())->toBe('APERTURA-LITERAL')->not->toContain('BIENVENIDA-TIENDA')
@@ -3439,26 +3390,56 @@ describe('the opening: a pre-filled message cut short, and the ad the customer c
     })->with([
         'completo' => ['Hola! Quiero conocer el coach Asesor Personal'],
         'incompleto' => ['Hola! Quiero conocer el co'],
-        'cambiado' => ['Buenas, me interesa'],
+        'modificado' => ['Buenas, me interesa'],
+        'con palabras adicionales' => ['Hola! Quiero conocer el coach Asesor Personal, ¿cuánto dura cada sesión?'],
         'casi vacío' => ['.'],
     ]);
 
-    it('keeps the ad first: a message naming another product still opens the ad\'s', function () {
+    it('keeps the ad first: a message naming another product still presents the ad\'s', function () {
         ($this->fromAd)('Quiero saber del curso de cocina Otro', $this->product->id);
 
         expect(gfLast())->toBe('APERTURA-LITERAL')->and(gfConversation()->fresh()->current_product_id)->toBe($this->product->id);
     });
 
-    it('goes by the text as before when the ad names no product', function () {
+    it('presents the product the message identifies without an ad, though it is not its trigger', function () {
+        gfSay('Quisiera saber más del Asesor y cómo me ayuda');
+
+        expect(gfLast())->toBe('APERTURA-LITERAL')->not->toContain('BIENVENIDA-TIENDA')
+            ->and($this->turnPrompts)->toBe([])->and(gfTurns())->toBe(0)
+            ->and(gfConversation()->fresh()->current_product_id)->toBe($this->product->id);
+    });
+
+    it('presents no product when the message does not identify one, and the one chosen after asking', function () {
+        gfSay('Buenas, me interesa');
+
+        expect(gfLast())->not->toContain('APERTURA')->toContain('Asesor')->toContain('Otro')
+            ->and($this->turnPrompts)->toBe([])->and(gfConversation()->fresh()->current_product_id)->toBeNull();
+
+        gfSay('2');
+
+        expect(gfLast())->toBe('APERTURA-OTRO');
+    });
+
+    it('never presents it again once the funnel started', function () {
+        gfSay('Quiero conocer el Asesor');
+        $this->turns = [gfJson('RESPUESTA-DEL-TURNO', question: 'comercial')];
+
+        gfSay('Quiero conocer el Asesor');
+
+        expect(gfLast())->toStartWith('RESPUESTA-DEL-TURNO')->and(($this->openingsSent)())->toBe(1);
+    });
+
+    it('does not present the product to a customer whose payment is already open', function () {
+        // A plan's button belongs to the conversation's product.
         gfConversation()->update(['current_product_id' => $this->product->id]);
-        $this->turns = [gfJson('Hola, cuéntame qué buscas.', question: 'cortesia')];
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Semanal', 'wamid.in.'.Str::random(10), 'interactive', null, null, null, 'plan:'.Plan::where('name', 'Semanal')->value('id'));
+        $this->travel(1)->seconds();
+        $this->turns = [gfJson('Sí, lo recibes por este chat.', question: 'comercial')];
 
-        ($this->fromAd)('Buenas, me interesa', null);
-        expect(gfLast())->not->toContain('APERTURA-LITERAL');
+        gfSay('¿El Asesor me llega por WhatsApp?');
 
-        ConversationFunnelState::query()->delete();
-        ($this->fromAd)('Hola! Quiero conocer el co', null);
-        expect(gfLast())->toBe('APERTURA-LITERAL');
+        expect(gfLast())->toBe('Sí, lo recibes por este chat.')->and(($this->openingsSent)())->toBe(0)
+            ->and(Payment::sole()->status)->toBe(Payment::STATUS_PENDING);
     });
 
     it('never opens again nor restarts a funnel under way when the customer comes from the same ad again', function () {
@@ -3517,6 +3498,42 @@ describe('the opening: a pre-filled message cut short, and the ad the customer c
             ->and(Payment::sole()->only(['id', 'product_id', 'status', 'plan_name', 'amount']))->toBe($payment)
             ->and(ConversationFunnelState::where('product_id', $this->product->id)->sole()->only(['id', 'stage', 'stage_interactions', 'context']))->toBe($state)
             // Earlier messages stay as they were; only the new turn is added.
+            ->and(array_slice(WhatsAppMessage::orderBy('id')->pluck('content', 'id')->all(), 0, count($history), true))->toBe($history);
+    });
+
+    it('lets a first message that asks to buy start the purchase, without the presentation', function (?bool $fromAd) {
+        $fromAd ? null : gfConversation()->update(['current_product_id' => $this->product->id]);
+
+        ($this->fromAd)('Quiero mi acceso', $fromAd ? $this->product->id : null);
+
+        expect(gfLast())->toContain('¿Qué plan de «Asesor» quieres?')->not->toContain('APERTURA-LITERAL')
+            ->and(($this->openingsSent)())->toBe(0)->and($this->turnPrompts)->toBe([]);
+    })->with(['con anuncio' => [true], 'sin anuncio' => [false]]);
+
+    it('lets a first message that asks for the plans show them, without the presentation', function (?bool $fromAd) {
+        $fromAd ? null : gfConversation()->update(['current_product_id' => $this->product->id]);
+
+        ($this->fromAd)('Ver opciones', $fromAd ? $this->product->id : null);
+
+        expect(gfLast())->toContain('1. Semanal: $9.900 COP por 7 días')->not->toContain('APERTURA-LITERAL')
+            ->and(($this->openingsSent)())->toBe(0)->and($this->turnPrompts)->toBe([])->and(Payment::count())->toBe(0);
+    })->with(['con anuncio' => [true], 'sin anuncio' => [false]]);
+
+    it('presents the product of an ad whose funnel did not start, though another product has a payment open', function () {
+        $this->versions->publish($this->other, GuidedFunnel::definition('INSTRUCCION-OTRO', 1));
+        gfConversation()->update(['current_product_id' => $this->product->id]);
+        ProcessWhatsAppMessage::dispatchSync($this->store->fresh(), GF_PHONE, 'Semanal', 'wamid.in.'.Str::random(10), 'interactive', null, null, null, 'plan:'.Plan::where('name', 'Semanal')->value('id'));
+        $this->travel(1)->seconds();
+        $payment = Payment::sole()->only(['id', 'product_id', 'status', 'plan_name', 'amount']);
+        $state = ConversationFunnelState::where('product_id', $this->product->id)->first()?->only(['id', 'stage', 'stage_interactions', 'context']);
+        $history = WhatsAppMessage::orderBy('id')->pluck('content', 'id')->all();
+
+        ($this->fromAd)('.', $this->other->id);
+
+        expect(gfLast())->toBe('APERTURA-OTRO')->and($this->turnPrompts)->toBe([])
+            ->and(ConversationFunnelState::where('product_id', $this->other->id)->sole()->stage)->toBe(GuidedFunnel::STAGE)
+            ->and(Payment::sole()->only(['id', 'product_id', 'status', 'plan_name', 'amount']))->toBe($payment)
+            ->and(ConversationFunnelState::where('product_id', $this->product->id)->first()?->only(['id', 'stage', 'stage_interactions', 'context']))->toBe($state)
             ->and(array_slice(WhatsAppMessage::orderBy('id')->pluck('content', 'id')->all(), 0, count($history), true))->toBe($history);
     });
 

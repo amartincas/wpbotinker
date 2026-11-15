@@ -47,19 +47,16 @@ class SalesFunnelRunner
         return $access->reason === AccessDecision::NO_SUBSCRIPTION;
     }
 
-    /**
-     * @param  string  $query  what the customer asked: differs from $message when it only picked an option
-     * @param  bool  $fromAd  the product was resolved from the ad the customer came from (OpeningMessage::for())
-     */
-    public function begin(Conversation $conversation, Product $product, SalesFunnel $funnel, AccessDecision $access, string $message, string $query, bool $fromAd = false): FunnelStep
+    public function begin(Conversation $conversation, Product $product, SalesFunnel $funnel, AccessDecision $access, string $message): FunnelStep
     {
         $definition = $funnel->funnelDefinition();
         $state = $this->states->find($conversation, $product);
 
-        // Only a funnel not started yet opens: a later message, or another ad, never starts it again.
-        if ($state === null && ($opening = $this->openings->for($product, $query, $fromAd)) !== null) {
-            return FunnelStep::literal($definition, $opening, $definition->startStage, $definition->openingConsumesFreeReply && $definition->freeRepliesLimit > 0, isOpening: true);
-        }
+        // Only a funnel not started yet opens: a later message, or another ad, never starts it again; nor
+        // does a customer who already chose a plan, whose payment is open, get the product presented.
+        // It goes out in place of the first step, unless the message itself asks to buy or for the plans.
+        $opening = $state === null && $access->openPayment === null ? $this->openings->for($product) : null;
+        $presented = fn () => FunnelStep::literal($definition, $opening, $definition->startStage, $definition->openingConsumesFreeReply && $definition->freeRepliesLimit > 0, isOpening: true);
 
         [$current, $interactions] = $this->position($definition, $state);
         $exhausted = $definition->freeRepliesLimit > 0 && ! $access->sampleAvailable;
@@ -74,12 +71,17 @@ class SalesFunnelRunner
             $visited[$current->key] = true;
 
             if ($current->isMessage()) {
-                return FunnelStep::literal($definition, $current->text, (string) $current->next, $current->usesFreeReplies);
+                return $opening !== null ? $presented() : FunnelStep::literal($definition, $current->text, (string) $current->next, $current->usesFreeReplies);
             }
 
             $rule = $this->deterministicRule($current, $product, $message, $interactions, $exhausted);
 
             if ($rule !== null && $rule['action'] !== FunnelDefinition::ACTION_STAY) {
+                // A purchase or the plans the message asks for go first; anything else waits for the presentation.
+                if ($opening !== null && ! ($this->askedInMessage($rule) && $rule['action'] !== FunnelDefinition::ACTION_GO_TO)) {
+                    return $presented();
+                }
+
                 if ($rule['action'] !== FunnelDefinition::ACTION_GO_TO) {
                     $next = $rule['stage'] ?? $current->key;
 
@@ -98,9 +100,15 @@ class SalesFunnelRunner
             if ($current->usesFreeReplies && $definition->guided) {
                 $action = GuidedFunnel::commercialAction($message);
 
-                return $action !== null
-                    ? FunnelStep::action($definition, $action, $current->key, $interactions)
-                    : FunnelStep::read($definition, $current, $interactions);
+                return match (true) {
+                    $action !== null => FunnelStep::action($definition, $action, $current->key, $interactions),
+                    $opening !== null => $presented(),
+                    default => FunnelStep::read($definition, $current, $interactions),
+                };
+            }
+
+            if ($opening !== null) {
+                return $presented();
             }
 
             if ($current->usesFreeReplies && $exhausted) {
@@ -300,6 +308,17 @@ class SalesFunnelRunner
         $current = $state !== null ? $definition->stage($state->stage) : null;
 
         return $current !== null ? [$current, $state->stage_interactions] : [$definition->start(), 0];
+    }
+
+    /**
+     * The rule fired on what the message says (a phrase, a plan named), not
+     * on the conversation's position or counters.
+     *
+     * @param  array<string, mixed>  $rule
+     */
+    private function askedInMessage(array $rule): bool
+    {
+        return in_array($rule['condition'], [FunnelDefinition::WHEN_PHRASE, FunnelDefinition::WHEN_PLAN_NAMED], true);
     }
 
     /**

@@ -339,12 +339,12 @@ describe('the opening message', function () {
         expect(feLast())->toBe($this->opening);
     })->with(['Hola! Quiero conocer el asesor', 'Buenas tardes, quiero conocer el asesor por favor', '¡Quiero conocer el asesor, gracias!']);
 
-    it('needs the whole message: another question is not the trigger', function () {
+    it('goes out whatever the first message says: the trigger is no longer needed', function () {
         $this->versions->publish($this->product, feDefinition([feStage('dudas')]));
 
         feJob($this->store, 'Quiero conocer el asesor, ¿qué incluye?');
 
-        expect(feLast())->not->toContain('TEXTO-INICIAL')->and(feAnswers())->toHaveCount(1);
+        expect(feLast())->toBe($this->opening)->and(feAnswers())->toHaveCount(0);
     });
 
     it('is not sent again once the funnel started; only an explicit reset does', function () {
@@ -400,8 +400,9 @@ describe('the opening message', function () {
         feJob($this->store, 'Tengo una consulta general', '573001230000');
         expect(feLast())->toContain('¿Sobre cuál de estas opciones')->and(feAnswers())->toHaveCount(0);
 
+        // Once chosen, the product is presented.
         feJob($this->store, '1', '573001230000');
-        expect(feAnswers())->toHaveCount(1);
+        expect(feLast())->toBe($this->opening)->and(feAnswers())->toHaveCount(0);
     });
 
     it('answers the trigger behind a clarification', function () {
@@ -412,6 +413,26 @@ describe('the opening message', function () {
         feJob($this->store, '2');
 
         expect(feLast())->toBe('INICIAL-OTRO');
+    });
+
+    it('lets a phrase rule that starts the payment go first, without the presentation', function () {
+        $this->versions->publish($this->product, feDefinition([feStage('dudas', ['rules' => [['when' => ['phrase' => ['Lo quiero']], 'then' => ['action' => 'start_payment']]]])]));
+
+        feJob($this->store, 'Lo quiero');
+
+        expect(feTexts())->toHaveCount(1)->and(feLast())->not->toContain('TEXTO-INICIAL')
+            ->and(\App\Models\Payment::count())->toBe(1)->and(feAnswers())->toHaveCount(0);
+    });
+
+    it('presents the product before a phrase rule that only moves to another stage', function () {
+        $this->versions->publish($this->product, feDefinition([
+            feStage('dudas', ['rules' => [['when' => ['phrase' => ['Avanzar ahora']], 'then' => ['action' => 'go_to', 'stage' => 'cierre']]]]),
+            feStage('cierre'),
+        ]));
+
+        feJob($this->store, 'Avanzar ahora');
+
+        expect(feLast())->toBe($this->opening)->and(feAnswers())->toHaveCount(0);
     });
 
     it('normalizes greetings without erasing a text that is only one', function () {
@@ -1259,19 +1280,19 @@ describe('greetings around a trigger', function () {
         ['Quiero algo, muchas gracias', 'quiero algo'],
     ]);
 
-    it('fires only on the whole trigger in a product without a funnel', function (string $message, bool $fires) {
+    it('presents a product without a funnel on any first message about it, trigger or not', function (string $message) {
         config(['botinker.free_interactions.max' => 3]);
         $this->product->update(['opening_message' => 'TEXTO-INICIAL', 'opening_triggers' => ['Quiero conocer el asesor', 'tardes']]);
 
         feJob($this->store, $message);
 
-        expect(feLast() === 'TEXTO-INICIAL')->toBe($fires);
+        expect(feLast())->toBe('TEXTO-INICIAL');
     })->with([
-        'with greeting' => ['Hola, quiero conocer el asesor', true],
-        'only a greeting' => ['Hola', false],
-        'a greeting that ends like a trigger' => ['Buenas tardes', false],
-        'greeting and courtesy' => ['Hola, gracias', false],
-        'more than the trigger' => ['Hola, quiero conocer el asesor y sus planes', false],
+        'with greeting' => ['Hola, quiero conocer el asesor'],
+        'only a greeting' => ['Hola'],
+        'a greeting that ends like a trigger' => ['Buenas tardes'],
+        'greeting and courtesy' => ['Hola, gracias'],
+        'more than the trigger' => ['Hola, quiero conocer el asesor y cómo funciona'],
     ]);
 });
 

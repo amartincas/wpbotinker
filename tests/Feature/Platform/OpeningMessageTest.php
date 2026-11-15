@@ -128,12 +128,12 @@ describe('the sequence from the ad', function () {
         expect(collect(omTexts())->take(2)->filter(fn ($text) => str_contains($text, 'Planes de') || str_contains($text, 'COP')))->toBeEmpty();
     });
 
-    it('replaces the store welcome with the opening, and keeps the welcome otherwise', function () {
+    it('replaces the store welcome with the opening for every new customer, whatever they write first', function () {
         omJob($this->store, OM_TRIGGER);
         expect(omLastText())->toBe(OM_OPENING)->not->toContain('BIENVENIDA-TIENDA');
 
         omJob($this->store, 'Hola, me bloqueo cuando la veo', '573009990001');
-        expect(omLastText())->toStartWith('BIENVENIDA-TIENDA');
+        expect(omLastText())->toBe(OM_OPENING)->not->toContain('BIENVENIDA-TIENDA');
     });
 
     it('sends nothing more until the customer writes', function () {
@@ -157,11 +157,11 @@ describe('trigger matching', function () {
         'extra spaces' => ['  Quiero   conocer el coach Secretos de la Seducción  '],
     ]);
 
-    it('answers any other first message with the model', function (string $message) {
+    it('presents the product for any other first message too: the trigger is no longer needed', function (string $message) {
         omJob($this->store, $message);
 
-        expect(omLastText())->toContain('CONSEJO-DEL-MODELO')->not->toContain('Soy Max, tu coach')
-            ->and(mainChatRequests())->toHaveCount(1)
+        expect(omLastText())->toBe(OM_OPENING)
+            ->and(mainChatRequests())->toHaveCount(0)
             ->and(omTurns($this->coach))->toBe(1);
     })->with([
         'a question about the product' => ['Secretos de la Seducción: ¿cómo coqueteo sin parecer amigo?'],
