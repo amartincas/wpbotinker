@@ -106,7 +106,8 @@ class SalesFunnelVersions
         return [
             ...$product->only([
                 'name', 'description', 'faq_context', 'access_mode', 'domain_key', 'aliases', 'meta_ad_ids',
-                'opening_message', 'opening_triggers', 'sample_instructions', 'sample_closing_message', 'commercial_instructions',
+                'opening_message', 'opening_triggers', 'opening_audio_enabled', 'opening_audio_followup',
+                'sample_instructions', 'sample_closing_message', 'commercial_instructions',
             ]),
             'plans' => Plan::where('product_id', $product->id)->where('is_active', true)->orderBy('sort_order')->orderBy('id')
                 ->get(['name', 'price', 'currency', 'duration_days'])->toArray(),

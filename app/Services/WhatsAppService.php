@@ -531,11 +531,63 @@ class WhatsAppService
     }
 
     /**
-     * Uploads a local file from the 'public' disk directly to Meta's Media
-     * endpoint, returning its media id for use in a subsequent message
-     * send. See sendWhatsAppImage() for why this replaced the 'link' method.
+     * Send an audio as WhatsApp's own audio message (type "audio"): uploaded
+     * to Meta and sent by its media id, never as a document nor as a link.
+     * An audio message carries no caption.
+     *
+     * @param string $audioPath Path to the audio on $disk
+     * @param string $mimeType Its WhatsApp audio type, read from the file itself (OpeningAudio::mimeType())
+     * @return string|null WAMID on success; null when Meta refused it, did not answer or gave no id
      */
-    private static function uploadMedia(string $imagePath, Store $store, string $disk = 'public'): ?string
+    public static function sendWhatsAppAudio(string $toNumber, string $audioPath, Store $store, string $mimeType, string $disk = 'local'): ?string
+    {
+        try {
+            $mediaId = self::uploadMedia($audioPath, $store, $disk, $mimeType);
+
+            if (!$mediaId) {
+                return null;
+            }
+
+            $response = Http::withToken($store->wa_access_token)->post("https://graph.facebook.com/v20.0/{$store->wa_phone_number_id}/messages", [
+                'messaging_product' => 'whatsapp',
+                'recipient_type' => 'individual',
+                'to' => $toNumber,
+                'type' => 'audio',
+                'audio' => ['id' => $mediaId],
+            ]);
+
+            $wamid = $response->successful() ? data_get($response->json(), 'messages.0.id') : null;
+
+            if (!$wamid) {
+                Log::warning('WhatsApp audio send failed', [
+                    'store_id' => $store->id,
+                    'media_id' => $mediaId,
+                    'status' => $response->status(),
+                    'error' => $response->json(),
+                ]);
+
+                return null;
+            }
+
+            return $wamid;
+        } catch (\Exception $e) {
+            Log::error('WhatsApp audio send error', [
+                'store_id' => $store->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Uploads a local file directly to Meta's Media endpoint, returning its
+     * media id for use in a subsequent message send. See sendWhatsAppImage()
+     * for why this replaced the 'link' method.
+     *
+     * @param string|null $mimeType The file's type when the caller already knows it; otherwise the disk's guess
+     */
+    private static function uploadMedia(string $imagePath, Store $store, string $disk = 'public', ?string $mimeType = null): ?string
     {
         if (!Storage::disk($disk)->exists($imagePath)) {
             Log::warning('WhatsApp media upload: local file not found', [
@@ -547,7 +599,7 @@ class WhatsAppService
 
         $url = "https://graph.facebook.com/v20.0/{$store->wa_phone_number_id}/media";
         $fullPath = Storage::disk($disk)->path($imagePath);
-        $mimeType = Storage::disk($disk)->mimeType($imagePath) ?: 'image/jpeg';
+        $mimeType ??= Storage::disk($disk)->mimeType($imagePath) ?: 'image/jpeg';
 
         $response = Http::withToken($store->wa_access_token)
             ->attach('file', fopen($fullPath, 'rb'), basename($fullPath), ['Content-Type' => $mimeType])

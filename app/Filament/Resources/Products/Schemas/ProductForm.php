@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Products\Schemas;
 
 use App\Models\Product;
+use App\Platform\Commerce\OpeningAudio;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
 use App\Platform\Domains\DomainRegistry;
@@ -14,6 +15,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\Toggle;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Schemas\Schema;
 use Filament\Schemas\Components\Section;
@@ -204,7 +206,7 @@ class ProductForm
                             ->columnSpanFull(),
                         Textarea::make('opening_message')
                             ->label('Mensaje inicial (opcional)')
-                            ->helperText('Se envía exactamente como está escrito, en lugar del saludo de la tienda, cuando el primer mensaje del cliente es uno de los activadores. Con un embudo activo puede ser la presentación comercial completa: escribe [Planes] donde deben ir los planes y el sistema inserta los oficiales, con sus precios; no escribas precios a mano. Sin embudo cuenta como la primera respuesta gratuita. Vacío: sin mensaje inicial.')
+                            ->helperText('Se envía exactamente como está escrito, en lugar del saludo de la tienda, la primera vez que el cliente escribe sobre el producto (por su anuncio o por su mensaje). Con un embudo activo puede ser la presentación comercial completa: escribe [Planes] donde deben ir los planes y el sistema inserta los oficiales, con sus precios; no escribas precios a mano. Sin embudo cuenta como la primera respuesta gratuita. Vacío: sin mensaje inicial.')
                             ->rows(5)
                             // With its plans and their buttons' text it stays within a WhatsApp message (4096 characters).
                             ->maxLength(3500)
@@ -215,6 +217,39 @@ class ProductForm
                             ->label('Activadores del mensaje inicial')
                             ->helperText('Mensajes que lo activan, por ejemplo el mensaje precargado del anuncio. Se comparan sin tildes, mayúsculas ni signos.')
                             ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        Toggle::make('opening_audio_enabled')
+                            ->label('Presentación con audio')
+                            ->helperText('Después del mensaje inicial se envían el audio y el mensaje posterior. Desactivado: la presentación es solo el mensaje inicial.')
+                            ->live()
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION)
+                            ->columnSpanFull(),
+                        FileUpload::make('opening_audio_path')
+                            ->label('Audio de presentación')
+                            ->helperText('MP3, AAC, AMR, OGG con códec Opus (nota de voz) o M4A con audio AAC, máximo '.(OpeningAudio::MAX_KILOBYTES / 1024).' MB. Se envía como audio de WhatsApp. Del M4A solo se comprueba el formato del archivo, no su códec: pruébalo antes de usarlo. Al subir otro, el anterior se elimina.')
+                            ->disk(OpeningAudio::DISK)
+                            ->directory(OpeningAudio::DIRECTORY)
+                            ->visibility('private')
+                            ->acceptedFileTypes(OpeningAudio::ACCEPTED_TYPES)
+                            ->maxSize(OpeningAudio::MAX_KILOBYTES)
+                            // What the file really is, from its own bytes: WhatsApp refuses an OGG that is not Opus.
+                            ->rules([fn () => function (string $attribute, $value, Closure $fail) {
+                                $path = is_object($value) && method_exists($value, 'getRealPath') ? $value->getRealPath() : null;
+
+                                if ($path && OpeningAudio::mimeType($path) === null) {
+                                    $fail('WhatsApp no reproduce este archivo como audio. Usa MP3, M4A, AAC, AMR u OGG con códec Opus.');
+                                }
+                            }])
+                            ->requiredIf('opening_audio_enabled', true)
+                            ->validationMessages(['required_if' => 'Sube el audio o desactiva la presentación con audio.', 'max' => 'El audio supera el tamaño máximo.'])
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION && $get('opening_audio_enabled'))
+                            ->columnSpanFull(),
+                        Textarea::make('opening_audio_followup')
+                            ->label('Mensaje posterior al audio (opcional)')
+                            ->helperText('Se envía solo, justo después del audio. Puede usar {producto} y [Planes]: el sistema inserta los planes oficiales, con sus precios.')
+                            ->rows(4)
+                            ->maxLength(3500)
+                            ->visible(fn (Get $get) => $get('access_mode') === Product::ACCESS_SUBSCRIPTION && $get('opening_audio_enabled'))
                             ->columnSpanFull(),
                         Textarea::make('commercial_instructions')
                             ->label('Instrucciones comerciales (opcional)')

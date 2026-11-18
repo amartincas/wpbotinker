@@ -2,12 +2,14 @@
 
 namespace App\Models;
 
+use App\Platform\Commerce\OpeningAudio;
 use App\Platform\Commerce\SampleLedger;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 #[Fillable([
@@ -31,6 +33,9 @@ use InvalidArgumentException;
     'sample_closing_message',
     'opening_message',
     'opening_triggers',
+    'opening_audio_enabled',
+    'opening_audio_path',
+    'opening_audio_followup',
     'activation_message',
     'commercial_instructions',
 ])]
@@ -64,6 +69,7 @@ class Product extends Model
             'aliases' => 'array',
             'required_facts' => 'array',
             'opening_triggers' => 'array',
+            'opening_audio_enabled' => 'boolean',
         ];
     }
 
@@ -97,6 +103,21 @@ class Product extends Model
         // dropped first, so removing them does not depend on the order.
         static::deleting(function (self $product) {
             static::query()->whereKey($product->id)->toBase()->update(['active_sales_funnel_id' => null]);
+        });
+
+        // The opening's audio is one private file per product: a replaced or removed one is not kept.
+        static::updated(function (self $product) {
+            $previous = $product->getOriginal('opening_audio_path');
+
+            if ($product->wasChanged('opening_audio_path') && filled($previous)) {
+                Storage::disk(OpeningAudio::DISK)->delete($previous);
+            }
+        });
+
+        static::deleted(function (self $product) {
+            if (filled($product->opening_audio_path)) {
+                Storage::disk(OpeningAudio::DISK)->delete($product->opening_audio_path);
+            }
         });
     }
 

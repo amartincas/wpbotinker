@@ -17,6 +17,7 @@ use App\Platform\Commerce\CommerceResponder;
 use App\Platform\Commerce\CommercialAdvisor;
 use App\Platform\Commerce\CommercialClaims;
 use App\Platform\Commerce\FreeTurn;
+use App\Platform\Commerce\OpeningAudio;
 use App\Platform\Commerce\OpeningMessage;
 use App\Platform\Commerce\SampleLedger;
 use App\Platform\Contracts\DomainModule;
@@ -72,6 +73,9 @@ class ConversationPipeline
     /** How close (percent) a fallback reply may come to a recent reply before it counts as said again. */
     private const REPEATED_SIMILARITY = 85;
 
+    /** What the history holds for the opening's audio: that it went out, not what it says. */
+    public const OPENING_AUDIO_HISTORY = '[Audio de presentación enviado]';
+
     /** The store's welcome, still to be put before this turn's first reply (see withWelcome()). */
     private ?string $welcome = null;
 
@@ -101,6 +105,7 @@ class ConversationPipeline
         private readonly CommercialAdvisor $advisor,
         private readonly TopicClassifier $topics,
         private readonly OpeningMessage $openings,
+        private readonly OpeningAudio $openingAudio,
         private readonly SalesFunnelRunner $funnels,
         private readonly KnowledgeAccess $knowledgeAccess,
         private readonly CommercialClaims $claims,
@@ -301,6 +306,11 @@ class ConversationPipeline
                 $this->commerce->recordOfferShown($conversation, $product);
             }
 
+            // The opening's text was the first free reply: its audio and follow-up are part of it.
+            if ($opening !== null) {
+                $this->deliverOpeningAudio($store, $conversation, $from, $product, $domain?->key());
+            }
+
             return;
         }
 
@@ -379,6 +389,11 @@ class ConversationPipeline
                 $this->releaseFunnelReply($reservation);
 
                 throw $e;
+            }
+
+            // The opening's text went out and the funnel started: its audio and follow-up, if configured.
+            if ($step->isOpening) {
+                $this->deliverOpeningAudio($store, $conversation, $from, $product, $domain->key());
             }
 
             return;
@@ -953,6 +968,95 @@ class ConversationPipeline
 
         try {
             WhatsAppMessage::recordDeliveredTurn($store->id, $from, $domainKey, $messageBody, $sentText, $sentWamid);
+        } catch (Throwable $e) {
+            Log::error('TURN_HISTORY_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
+        }
+    }
+
+    /**
+     * The audio and the follow-up of a product's opening, right after its text
+     * went out (and the funnel, or the free reply, already records that it was
+     * given). Neither ever fails the job: the text is already with the
+     * customer, and a retry would send it again. Each one that WhatsApp took
+     * is recorded; one it did not take is logged and the next goes on.
+     *
+     * Limits, without an outbox: an unknown outcome (a timeout) counts as not
+     * taken and is not sent again by this code, so if WhatsApp did deliver
+     * it, it shows once but is missing from the history; if it did not, it
+     * is lost. A worker that dies after the opening's text went out but
+     * before the funnel (or the free reply) recorded it gets that text sent
+     * again by the queue's retry, as any opening without audio would.
+     */
+    private function deliverOpeningAudio(Store $store, Conversation $conversation, string $from, Product $product, ?string $domainKey): void
+    {
+        $audio = $this->openingAudio->for($product);
+
+        if ($audio === null) {
+            return;
+        }
+
+        $type = null;
+
+        try {
+            $type = $this->openingAudio->storedType($audio['path']);
+            $wamid = $type !== null ? WhatsAppService::sendWhatsAppAudio($from, (string) $audio['path'], $store, $type, OpeningAudio::DISK) : null;
+        } catch (Throwable $e) {
+            $wamid = null;
+        }
+
+        if ($wamid !== null) {
+            // The model knows an audio went out, never what it says.
+            $this->recordAssistantTurn($store, $from, $domainKey, self::OPENING_AUDIO_HISTORY, $wamid);
+        } else {
+            Log::warning('OPENING_AUDIO_FAILED', ['store_id' => $store->id, 'product_id' => $product->id, 'reason' => $type === null ? 'file' : 'send']);
+        }
+
+        if ($audio['followup'] === null) {
+            return;
+        }
+
+        // The opening's text already showed the plans: in the follow-up they become how to see them again, not a second list.
+        $plansShown = $this->carriesPlans((string) $product->opening_message);
+        $followup = $plansShown
+            ? $this->fillPlaceholders(strtr((string) preg_replace(StageReply::PLANS_MARKER, '{planes}', $audio['followup']), ['{planes}' => $this->commerce->offerPointer()]), $product)
+            : $this->fillPlaceholders($audio['followup'], $product);
+        $sentText = $followup;
+
+        try {
+            $sentWamid = $this->send($store, $from, $followup, $sentText);
+        } catch (Throwable $e) {
+            $sentWamid = null;
+        }
+
+        if ($sentWamid === null) {
+            Log::warning('OPENING_FOLLOWUP_FAILED', ['store_id' => $store->id, 'product_id' => $product->id]);
+
+            return;
+        }
+
+        $this->recordAssistantTurn($store, $from, $domainKey, (string) $sentText, $sentWamid);
+
+        try {
+            $this->afterFunnelOffer(! $plansShown && $this->carriesPlans($audio['followup']), $conversation, $product);
+        } catch (Throwable $e) {
+            Log::error('OPENING_OFFER_NOT_RECORDED', ['store_id' => $store->id, 'error' => $e::class]);
+        }
+    }
+
+    /** A message of the bot alone (no customer turn with it), recorded once WhatsApp took it. */
+    private function recordAssistantTurn(Store $store, string $from, ?string $domainKey, string $content, string $wamid): void
+    {
+        try {
+            WhatsAppMessage::create([
+                'store_id' => $store->id,
+                'customer_phone' => $from,
+                'role' => 'assistant',
+                'domain_key' => $domainKey,
+                'content' => $content,
+                'wamid' => $wamid,
+                'status' => 'pending',
+                'status_updated_at' => now(),
+            ]);
         } catch (Throwable $e) {
             Log::error('TURN_HISTORY_NOT_SAVED', ['store_id' => $store->id, 'error' => $e::class]);
         }
